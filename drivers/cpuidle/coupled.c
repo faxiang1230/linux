@@ -119,7 +119,6 @@ struct cpuidle_coupled {
 
 #define CPUIDLE_COUPLED_NOT_IDLE	(-1)
 
-static DEFINE_MUTEX(cpuidle_coupled_lock);
 static DEFINE_PER_CPU(struct call_single_data, cpuidle_coupled_poke_cb);
 
 /*
@@ -184,6 +183,28 @@ void cpuidle_coupled_parallel_barrier(struct cpuidle_device *dev, atomic_t *a)
 bool cpuidle_state_is_coupled(struct cpuidle_driver *drv, int state)
 {
 	return drv->states[state].flags & CPUIDLE_FLAG_COUPLED;
+}
+
+/**
+ * cpuidle_coupled_state_verify - check if the coupled states are correctly set.
+ * @drv: struct cpuidle_driver for the platform
+ *
+ * Returns 0 for valid state values, a negative error code otherwise:
+ *  * -EINVAL if any coupled state(safe_state_index) is wrongly set.
+ */
+int cpuidle_coupled_state_verify(struct cpuidle_driver *drv)
+{
+	int i;
+
+	for (i = drv->state_count - 1; i >= 0; i--) {
+		if (cpuidle_state_is_coupled(drv, i) &&
+		    (drv->safe_state_index == i ||
+		     drv->safe_state_index < 0 ||
+		     drv->safe_state_index >= drv->state_count))
+			return -EINVAL;
+	}
+
+	return 0;
 }
 
 /**

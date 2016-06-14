@@ -222,9 +222,9 @@ static void __pmu_domain_register(struct pmu_domain *domain,
 }
 
 /* PMU IRQ controller */
-static void pmu_irq_handler(unsigned int irq, struct irq_desc *desc)
+static void pmu_irq_handler(struct irq_desc *desc)
 {
-	struct pmu_data *pmu = irq_get_handler_data(irq);
+	struct pmu_data *pmu = irq_desc_get_handler_data(desc);
 	struct irq_chip_generic *gc = pmu->irq_gc;
 	struct irq_domain *domain = pmu->irq_domain;
 	void __iomem *base = gc->reg_base;
@@ -232,7 +232,7 @@ static void pmu_irq_handler(unsigned int irq, struct irq_desc *desc)
 	u32 done = ~0;
 
 	if (stat == 0) {
-		handle_bad_irq(irq, desc);
+		handle_bad_irq(desc);
 		return;
 	}
 
@@ -301,6 +301,49 @@ static int __init dove_init_pmu_irq(struct pmu_data *pmu, int irq)
 
 	irq_set_handler_data(irq, pmu);
 	irq_set_chained_handler(irq, pmu_irq_handler);
+
+	return 0;
+}
+
+int __init dove_init_pmu_legacy(const struct dove_pmu_initdata *initdata)
+{
+	const struct dove_pmu_domain_initdata *domain_initdata;
+	struct pmu_data *pmu;
+	int ret;
+
+	pmu = kzalloc(sizeof(*pmu), GFP_KERNEL);
+	if (!pmu)
+		return -ENOMEM;
+
+	spin_lock_init(&pmu->lock);
+	pmu->pmc_base = initdata->pmc_base;
+	pmu->pmu_base = initdata->pmu_base;
+
+	pmu_reset_init(pmu);
+	for (domain_initdata = initdata->domains; domain_initdata->name;
+	     domain_initdata++) {
+		struct pmu_domain *domain;
+
+		domain = kzalloc(sizeof(*domain), GFP_KERNEL);
+		if (domain) {
+			domain->pmu = pmu;
+			domain->pwr_mask = domain_initdata->pwr_mask;
+			domain->rst_mask = domain_initdata->rst_mask;
+			domain->iso_mask = domain_initdata->iso_mask;
+			domain->base.name = domain_initdata->name;
+
+			__pmu_domain_register(domain, NULL);
+		}
+	}
+
+	ret = dove_init_pmu_irq(pmu, initdata->irq);
+	if (ret)
+		pr_err("dove_init_pmu_irq() failed: %d\n", ret);
+
+	if (pmu->irq_domain)
+		irq_domain_associate_many(pmu->irq_domain,
+					  initdata->irq_domain_start,
+					  0, NR_PMU_IRQS);
 
 	return 0;
 }
@@ -396,7 +439,6 @@ int __init dove_init_pmu(void)
 
 		__pmu_domain_register(domain, np);
 	}
-	pm_genpd_poweroff_unused();
 
 	/* Loss of the interrupt controller is not a fatal error. */
 	parent_irq = irq_of_parse_and_map(pmu->of_node, 0);

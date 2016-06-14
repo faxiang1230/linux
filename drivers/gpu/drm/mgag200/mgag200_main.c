@@ -29,7 +29,7 @@ static const struct drm_framebuffer_funcs mga_fb_funcs = {
 
 int mgag200_framebuffer_init(struct drm_device *dev,
 			     struct mga_framebuffer *gfb,
-			     struct drm_mode_fb_cmd2 *mode_cmd,
+			     const struct drm_mode_fb_cmd2 *mode_cmd,
 			     struct drm_gem_object *obj)
 {
 	int ret;
@@ -47,13 +47,13 @@ int mgag200_framebuffer_init(struct drm_device *dev,
 static struct drm_framebuffer *
 mgag200_user_framebuffer_create(struct drm_device *dev,
 				struct drm_file *filp,
-				struct drm_mode_fb_cmd2 *mode_cmd)
+				const struct drm_mode_fb_cmd2 *mode_cmd)
 {
 	struct drm_gem_object *obj;
 	struct mga_framebuffer *mga_fb;
 	int ret;
 
-	obj = drm_gem_object_lookup(dev, filp, mode_cmd->handles[0]);
+	obj = drm_gem_object_lookup(filp, mode_cmd->handles[0]);
 	if (obj == NULL)
 		return ERR_PTR(-ENOENT);
 
@@ -220,7 +220,7 @@ int mgag200_driver_load(struct drm_device *dev, unsigned long flags)
 	}
 	r = mgag200_mm_init(mdev);
 	if (r)
-		goto out;
+		goto err_mm;
 
 	drm_mode_config_init(dev);
 	dev->mode_config.funcs = (void *)&mga_mode_funcs;
@@ -233,7 +233,7 @@ int mgag200_driver_load(struct drm_device *dev, unsigned long flags)
 	r = mgag200_modeset_init(mdev);
 	if (r) {
 		dev_err(&dev->pdev->dev, "Fatal error during modeset init: %d\n", r);
-		goto out;
+		goto err_modeset;
 	}
 
 	/* Make small buffers to store a hardware cursor (double buffered icon updates) */
@@ -241,20 +241,24 @@ int mgag200_driver_load(struct drm_device *dev, unsigned long flags)
 					  &mdev->cursor.pixels_1);
 	mgag200_bo_create(dev, roundup(48*64, PAGE_SIZE), 0, 0,
 					  &mdev->cursor.pixels_2);
-	if (!mdev->cursor.pixels_2 || !mdev->cursor.pixels_1)
-		goto cursor_nospace;
-	mdev->cursor.pixels_current = mdev->cursor.pixels_1;
-	mdev->cursor.pixels_prev = mdev->cursor.pixels_2;
-	goto cursor_done;
- cursor_nospace:
-	mdev->cursor.pixels_1 = NULL;
-	mdev->cursor.pixels_2 = NULL;
-	dev_warn(&dev->pdev->dev, "Could not allocate space for cursors. Not doing hardware cursors.\n");
- cursor_done:
+	if (!mdev->cursor.pixels_2 || !mdev->cursor.pixels_1) {
+		mdev->cursor.pixels_1 = NULL;
+		mdev->cursor.pixels_2 = NULL;
+		dev_warn(&dev->pdev->dev,
+			"Could not allocate space for cursors. Not doing hardware cursors.\n");
+	} else {
+		mdev->cursor.pixels_current = mdev->cursor.pixels_1;
+		mdev->cursor.pixels_prev = mdev->cursor.pixels_2;
+	}
 
-out:
-	if (r)
-		mgag200_driver_unload(dev);
+	return 0;
+
+err_modeset:
+	drm_mode_config_cleanup(dev);
+	mgag200_mm_fini(mdev);
+err_mm:
+	dev->dev_private = NULL;
+
 	return r;
 }
 
@@ -354,7 +358,7 @@ mgag200_dumb_mmap_offset(struct drm_file *file,
 	struct drm_gem_object *obj;
 	struct mgag200_bo *bo;
 
-	obj = drm_gem_object_lookup(dev, file, handle);
+	obj = drm_gem_object_lookup(file, handle);
 	if (obj == NULL)
 		return -ENOENT;
 

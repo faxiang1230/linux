@@ -113,7 +113,8 @@ out:
 	return status;
 }
 
-static int nfs_delegation_claim_opens(struct inode *inode, const nfs4_stateid *stateid)
+static int nfs_delegation_claim_opens(struct inode *inode,
+		const nfs4_stateid *stateid, fmode_t type)
 {
 	struct nfs_inode *nfsi = NFS_I(inode);
 	struct nfs_open_context *ctx;
@@ -140,7 +141,7 @@ again:
 		/* Block nfs4_proc_unlck */
 		mutex_lock(&sp->so_delegreturn_mutex);
 		seq = raw_seqcount_begin(&sp->so_reclaim_seqcount);
-		err = nfs4_open_delegation_recall(ctx, state, stateid);
+		err = nfs4_open_delegation_recall(ctx, state, stateid, type);
 		if (!err)
 			err = nfs_delegation_claim_locks(ctx, state, stateid);
 		if (!err && read_seqcount_retry(&sp->so_reclaim_seqcount, seq))
@@ -411,7 +412,8 @@ static int nfs_end_delegation_return(struct inode *inode, struct nfs_delegation 
 	do {
 		if (test_bit(NFS_DELEGATION_REVOKED, &delegation->flags))
 			break;
-		err = nfs_delegation_claim_opens(inode, &delegation->stateid);
+		err = nfs_delegation_claim_opens(inode, &delegation->stateid,
+				delegation->type);
 		if (!issync || err != -EAGAIN)
 			break;
 		/*
@@ -719,14 +721,12 @@ int nfs_async_inode_return_delegation(struct inode *inode,
 	struct nfs_client *clp = server->nfs_client;
 	struct nfs_delegation *delegation;
 
-	filemap_flush(inode->i_mapping);
-
 	rcu_read_lock();
 	delegation = rcu_dereference(NFS_I(inode)->delegation);
 	if (delegation == NULL)
 		goto out_enoent;
-
-	if (!clp->cl_mvops->match_stateid(&delegation->stateid, stateid))
+	if (stateid != NULL &&
+	    !clp->cl_mvops->match_stateid(&delegation->stateid, stateid))
 		goto out_enoent;
 	nfs_mark_return_delegation(server, delegation);
 	rcu_read_unlock();
@@ -875,15 +875,16 @@ int nfs_delegations_present(struct nfs_client *clp)
 
 /**
  * nfs4_copy_delegation_stateid - Copy inode's state ID information
- * @dst: stateid data structure to fill in
  * @inode: inode to check
  * @flags: delegation type requirement
+ * @dst: stateid data structure to fill in
+ * @cred: optional argument to retrieve credential
  *
  * Returns "true" and fills in "dst->data" * if inode had a delegation,
  * otherwise "false" is returned.
  */
-bool nfs4_copy_delegation_stateid(nfs4_stateid *dst, struct inode *inode,
-		fmode_t flags)
+bool nfs4_copy_delegation_stateid(struct inode *inode, fmode_t flags,
+		nfs4_stateid *dst, struct rpc_cred **cred)
 {
 	struct nfs_inode *nfsi = NFS_I(inode);
 	struct nfs_delegation *delegation;
@@ -896,6 +897,8 @@ bool nfs4_copy_delegation_stateid(nfs4_stateid *dst, struct inode *inode,
 	if (ret) {
 		nfs4_stateid_copy(dst, &delegation->stateid);
 		nfs_mark_delegation_referenced(delegation);
+		if (cred)
+			*cred = get_rpccred(delegation->cred);
 	}
 	rcu_read_unlock();
 	return ret;

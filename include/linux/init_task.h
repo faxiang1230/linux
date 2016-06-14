@@ -52,7 +52,8 @@ extern struct fs_struct init_fs;
 	.rlim		= INIT_RLIMITS,					\
 	.cputimer	= { 						\
 		.cputime_atomic	= INIT_CPUTIME_ATOMIC,			\
-		.running	= 0,					\
+		.running	= false,				\
+		.checking_timer = false,				\
 	},								\
 	INIT_PREV_CPUTIME(sig)						\
 	.cred_guard_mutex =						\
@@ -149,7 +150,7 @@ extern struct task_group root_task_group;
 
 #ifdef CONFIG_VIRT_CPU_ACCOUNTING_GEN
 # define INIT_VTIME(tsk)						\
-	.vtime_seqlock = __SEQLOCK_UNLOCKED(tsk.vtime_seqlock),	\
+	.vtime_seqcount = SEQCNT_ZERO(tsk.vtime_seqcount),	\
 	.vtime_snap = 0,				\
 	.vtime_snap_whence = VTIME_SYS,
 #else

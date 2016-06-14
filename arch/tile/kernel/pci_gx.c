@@ -40,7 +40,7 @@
 #include <arch/sim.h>
 
 /*
- * This file containes the routines to search for PCI buses,
+ * This file contains the routines to search for PCI buses,
  * enumerate the buses, and configure any attached devices.
  */
 
@@ -304,17 +304,16 @@ static struct irq_chip tilegx_legacy_irq_chip = {
  * to Linux which just calls handle_level_irq() after clearing the
  * MAC INTx Assert status bit associated with this interrupt.
  */
-static void trio_handle_level_irq(unsigned int __irq, struct irq_desc *desc)
+static void trio_handle_level_irq(struct irq_desc *desc)
 {
 	struct pci_controller *controller = irq_desc_get_handler_data(desc);
 	gxio_trio_context_t *trio_context = controller->trio;
 	uint64_t intx = (uint64_t)irq_desc_get_chip_data(desc);
-	unsigned int irq = irq_desc_get_irq(desc);
 	int mac = controller->mac;
 	unsigned int reg_offset;
 	uint64_t level_mask;
 
-	handle_level_irq(irq, desc);
+	handle_level_irq(desc);
 
 	/*
 	 * Clear the INTx Level status, otherwise future interrupts are
@@ -435,7 +434,7 @@ int __init tile_pci_init(void)
 
 	/*
 	 * Now determine which PCIe ports are configured to operate in RC
-	 * mode. There is a differece in the port configuration capability
+	 * mode. There is a difference in the port configuration capability
 	 * between the Gx36 and Gx72 devices.
 	 *
 	 * The Gx36 has configuration capability for each of the 3 PCIe
@@ -1327,7 +1326,7 @@ invalid_device:
 
 
 /*
- * See tile_cfg_read() for relevent comments.
+ * See tile_cfg_read() for relevant comments.
  * Note that "val" is the value to write, not a pointer to that value.
  */
 static int tile_cfg_write(struct pci_bus *bus, unsigned int devfn, int offset,

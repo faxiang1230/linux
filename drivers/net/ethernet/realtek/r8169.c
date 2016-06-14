@@ -345,7 +345,7 @@ static const struct pci_device_id rtl8169_pci_tbl[] = {
 MODULE_DEVICE_TABLE(pci, rtl8169_pci_tbl);
 
 static int rx_buf_sz = 16383;
-static int use_dac;
+static int use_dac = -1;
 static struct {
 	u32 msg_enable;
 } debug = { -1 };
@@ -833,7 +833,8 @@ struct rtl8169_private {
 	unsigned features;
 
 	struct mii_if_info mii;
-	struct rtl8169_counters counters;
+	dma_addr_t counters_phys_addr;
+	struct rtl8169_counters *counters;
 	struct rtl8169_tc_offsets tc_offset;
 	u32 saved_wolopts;
 	u32 opts1_mask;
@@ -1998,7 +1999,8 @@ static int rtl8169_set_speed(struct net_device *dev,
 		goto out;
 
 	if (netif_running(dev) && (autoneg == AUTONEG_ENABLE) &&
-	    (advertising & ADVERTISED_1000baseT_Full)) {
+	    (advertising & ADVERTISED_1000baseT_Full) &&
+	    !pci_is_pcie(tp->pci_dev)) {
 		mod_timer(&tp->timer, jiffies + RTL8169_PHY_TIMEOUT);
 	}
 out:
@@ -2190,53 +2192,37 @@ static int rtl8169_get_sset_count(struct net_device *dev, int sset)
 	}
 }
 
-static struct rtl8169_counters *rtl8169_map_counters(struct net_device *dev,
-						     dma_addr_t *paddr,
-						     u32 counter_cmd)
+DECLARE_RTL_COND(rtl_counters_cond)
 {
-	struct rtl8169_private *tp = netdev_priv(dev);
 	void __iomem *ioaddr = tp->mmio_addr;
-	struct device *d = &tp->pci_dev->dev;
-	struct rtl8169_counters *counters;
-	u32 cmd;
 
-	counters = dma_alloc_coherent(d, sizeof(*counters), paddr, GFP_KERNEL);
-	if (counters) {
-		RTL_W32(CounterAddrHigh, (u64)*paddr >> 32);
-		cmd = (u64)*paddr & DMA_BIT_MASK(32);
-		RTL_W32(CounterAddrLow, cmd);
-		RTL_W32(CounterAddrLow, cmd | counter_cmd);
-	}
-	return counters;
+	return RTL_R32(CounterAddrLow) & (CounterReset | CounterDump);
 }
 
-static void rtl8169_unmap_counters (struct net_device *dev,
-				    dma_addr_t paddr,
-				    struct rtl8169_counters *counters)
+static bool rtl8169_do_counters(struct net_device *dev, u32 counter_cmd)
 {
 	struct rtl8169_private *tp = netdev_priv(dev);
 	void __iomem *ioaddr = tp->mmio_addr;
-	struct device *d = &tp->pci_dev->dev;
+	dma_addr_t paddr = tp->counters_phys_addr;
+	u32 cmd;
+	bool ret;
+
+	RTL_W32(CounterAddrHigh, (u64)paddr >> 32);
+	cmd = (u64)paddr & DMA_BIT_MASK(32);
+	RTL_W32(CounterAddrLow, cmd);
+	RTL_W32(CounterAddrLow, cmd | counter_cmd);
+
+	ret = rtl_udelay_loop_wait_low(tp, &rtl_counters_cond, 10, 1000);
 
 	RTL_W32(CounterAddrLow, 0);
 	RTL_W32(CounterAddrHigh, 0);
 
-	dma_free_coherent(d, sizeof(*counters), counters, paddr);
-}
-
-DECLARE_RTL_COND(rtl_reset_counters_cond)
-{
-	void __iomem *ioaddr = tp->mmio_addr;
-
-	return RTL_R32(CounterAddrLow) & CounterReset;
+	return ret;
 }
 
 static bool rtl8169_reset_counters(struct net_device *dev)
 {
 	struct rtl8169_private *tp = netdev_priv(dev);
-	struct rtl8169_counters *counters;
-	dma_addr_t paddr;
-	bool ret = true;
 
 	/*
 	 * Versions prior to RTL_GIGA_MAC_VER_19 don't support resetting the
@@ -2245,32 +2231,13 @@ static bool rtl8169_reset_counters(struct net_device *dev)
 	if (tp->mac_version < RTL_GIGA_MAC_VER_19)
 		return true;
 
-	counters = rtl8169_map_counters(dev, &paddr, CounterReset);
-	if (!counters)
-		return false;
-
-	if (!rtl_udelay_loop_wait_low(tp, &rtl_reset_counters_cond, 10, 1000))
-		ret = false;
-
-	rtl8169_unmap_counters(dev, paddr, counters);
-
-	return ret;
-}
-
-DECLARE_RTL_COND(rtl_counters_cond)
-{
-	void __iomem *ioaddr = tp->mmio_addr;
-
-	return RTL_R32(CounterAddrLow) & CounterDump;
+	return rtl8169_do_counters(dev, CounterReset);
 }
 
 static bool rtl8169_update_counters(struct net_device *dev)
 {
 	struct rtl8169_private *tp = netdev_priv(dev);
 	void __iomem *ioaddr = tp->mmio_addr;
-	struct rtl8169_counters *counters;
-	dma_addr_t paddr;
-	bool ret = true;
 
 	/*
 	 * Some chips are unable to dump tally counters when the receiver
@@ -2279,23 +2246,13 @@ static bool rtl8169_update_counters(struct net_device *dev)
 	if ((RTL_R8(ChipCmd) & CmdRxEnb) == 0)
 		return true;
 
-	counters = rtl8169_map_counters(dev, &paddr, CounterDump);
-	if (!counters)
-		return false;
-
-	if (rtl_udelay_loop_wait_low(tp, &rtl_counters_cond, 10, 1000))
-		memcpy(&tp->counters, counters, sizeof(*counters));
-	else
-		ret = false;
-
-	rtl8169_unmap_counters(dev, paddr, counters);
-
-	return ret;
+	return rtl8169_do_counters(dev, CounterDump);
 }
 
 static bool rtl8169_init_counter_offsets(struct net_device *dev)
 {
 	struct rtl8169_private *tp = netdev_priv(dev);
+	struct rtl8169_counters *counters = tp->counters;
 	bool ret = false;
 
 	/*
@@ -2323,9 +2280,9 @@ static bool rtl8169_init_counter_offsets(struct net_device *dev)
 	if (rtl8169_update_counters(dev))
 		ret = true;
 
-	tp->tc_offset.tx_errors = tp->counters.tx_errors;
-	tp->tc_offset.tx_multi_collision = tp->counters.tx_multi_collision;
-	tp->tc_offset.tx_aborted = tp->counters.tx_aborted;
+	tp->tc_offset.tx_errors = counters->tx_errors;
+	tp->tc_offset.tx_multi_collision = counters->tx_multi_collision;
+	tp->tc_offset.tx_aborted = counters->tx_aborted;
 	tp->tc_offset.inited = true;
 
 	return ret;
@@ -2335,24 +2292,25 @@ static void rtl8169_get_ethtool_stats(struct net_device *dev,
 				      struct ethtool_stats *stats, u64 *data)
 {
 	struct rtl8169_private *tp = netdev_priv(dev);
+	struct rtl8169_counters *counters = tp->counters;
 
 	ASSERT_RTNL();
 
 	rtl8169_update_counters(dev);
 
-	data[0] = le64_to_cpu(tp->counters.tx_packets);
-	data[1] = le64_to_cpu(tp->counters.rx_packets);
-	data[2] = le64_to_cpu(tp->counters.tx_errors);
-	data[3] = le32_to_cpu(tp->counters.rx_errors);
-	data[4] = le16_to_cpu(tp->counters.rx_missed);
-	data[5] = le16_to_cpu(tp->counters.align_errors);
-	data[6] = le32_to_cpu(tp->counters.tx_one_collision);
-	data[7] = le32_to_cpu(tp->counters.tx_multi_collision);
-	data[8] = le64_to_cpu(tp->counters.rx_unicast);
-	data[9] = le64_to_cpu(tp->counters.rx_broadcast);
-	data[10] = le32_to_cpu(tp->counters.rx_multicast);
-	data[11] = le16_to_cpu(tp->counters.tx_aborted);
-	data[12] = le16_to_cpu(tp->counters.tx_underun);
+	data[0] = le64_to_cpu(counters->tx_packets);
+	data[1] = le64_to_cpu(counters->rx_packets);
+	data[2] = le64_to_cpu(counters->tx_errors);
+	data[3] = le32_to_cpu(counters->rx_errors);
+	data[4] = le16_to_cpu(counters->rx_missed);
+	data[5] = le16_to_cpu(counters->align_errors);
+	data[6] = le32_to_cpu(counters->tx_one_collision);
+	data[7] = le32_to_cpu(counters->tx_multi_collision);
+	data[8] = le64_to_cpu(counters->rx_unicast);
+	data[9] = le64_to_cpu(counters->rx_broadcast);
+	data[10] = le32_to_cpu(counters->rx_multicast);
+	data[11] = le16_to_cpu(counters->tx_aborted);
+	data[12] = le16_to_cpu(counters->tx_underun);
 }
 
 static void rtl8169_get_strings(struct net_device *dev, u32 stringset, u8 *data)
@@ -3937,7 +3895,7 @@ static void rtl8168h_1_hw_phy_config(struct rtl8169_private *tp)
 
 	/* disable phy pfm mode */
 	rtl_writephy(tp, 0x1f, 0x0a44);
-	rtl_w0w1_phy(tp, 0x14, 0x0000, 0x0080);
+	rtl_w0w1_phy(tp, 0x11, 0x0000, 0x0080);
 	rtl_writephy(tp, 0x1f, 0x0000);
 
 	/* Check ALDPS bit, disable it if enabled */
@@ -3990,7 +3948,7 @@ static void rtl8168h_2_hw_phy_config(struct rtl8169_private *tp)
 	data = (ioffset_p3<<12)|(ioffset_p2<<8)|(ioffset_p1<<4)|(ioffset_p0);
 
 	if ((ioffset_p3 != 0x0f) || (ioffset_p2 != 0x0f) ||
-	    (ioffset_p1 != 0x0f) || (ioffset_p0 == 0x0f)) {
+	    (ioffset_p1 != 0x0f) || (ioffset_p0 != 0x0f)) {
 		rtl_writephy(tp, 0x1f, 0x0bcf);
 		rtl_writephy(tp, 0x16, data);
 		rtl_writephy(tp, 0x1f, 0x0000);
@@ -4010,7 +3968,7 @@ static void rtl8168h_2_hw_phy_config(struct rtl8169_private *tp)
 
 	/* disable phy pfm mode */
 	rtl_writephy(tp, 0x1f, 0x0a44);
-	rtl_w0w1_phy(tp, 0x14, 0x0000, 0x0080);
+	rtl_w0w1_phy(tp, 0x11, 0x0000, 0x0080);
 	rtl_writephy(tp, 0x1f, 0x0000);
 
 	/* Check ALDPS bit, disable it if enabled */
@@ -4976,8 +4934,6 @@ static void rtl_init_rxcfg(struct rtl8169_private *tp)
 		RTL_W32(RxConfig, RX128_INT_EN | RX_MULTI_EN | RX_DMA_BURST);
 		break;
 	case RTL_GIGA_MAC_VER_40:
-		RTL_W32(RxConfig, RX128_INT_EN | RX_MULTI_EN | RX_DMA_BURST | RX_EARLY_OFF);
-		break;
 	case RTL_GIGA_MAC_VER_41:
 	case RTL_GIGA_MAC_VER_42:
 	case RTL_GIGA_MAC_VER_43:
@@ -4986,8 +4942,6 @@ static void rtl_init_rxcfg(struct rtl8169_private *tp)
 	case RTL_GIGA_MAC_VER_46:
 	case RTL_GIGA_MAC_VER_47:
 	case RTL_GIGA_MAC_VER_48:
-		RTL_W32(RxConfig, RX128_INT_EN | RX_DMA_BURST | RX_EARLY_OFF);
-		break;
 	case RTL_GIGA_MAC_VER_49:
 	case RTL_GIGA_MAC_VER_50:
 	case RTL_GIGA_MAC_VER_51:
@@ -5861,11 +5815,10 @@ static void rtl_hw_start_8168d_4(struct rtl8169_private *tp)
 	void __iomem *ioaddr = tp->mmio_addr;
 	struct pci_dev *pdev = tp->pci_dev;
 	static const struct ephy_info e_info_8168d_4[] = {
-		{ 0x0b, ~0,	0x48 },
-		{ 0x19, 0x20,	0x50 },
-		{ 0x0c, ~0,	0x20 }
+		{ 0x0b, 0x0000,	0x0048 },
+		{ 0x19, 0x0020,	0x0050 },
+		{ 0x0c, 0x0100,	0x0020 }
 	};
-	int i;
 
 	rtl_csi_access_enable_1(tp);
 
@@ -5873,13 +5826,7 @@ static void rtl_hw_start_8168d_4(struct rtl8169_private *tp)
 
 	RTL_W8(MaxTxPacketSize, TxPacketMax);
 
-	for (i = 0; i < ARRAY_SIZE(e_info_8168d_4); i++) {
-		const struct ephy_info *e = e_info_8168d_4 + i;
-		u16 w;
-
-		w = rtl_ephy_read(tp, e->offset);
-		rtl_ephy_write(tp, 0x03, (w & e->mask) | e->bits);
-	}
+	rtl_ephy_init(tp, e_info_8168d_4, ARRAY_SIZE(e_info_8168d_4));
 
 	rtl_enable_clock_request(pdev);
 }
@@ -6124,7 +6071,7 @@ static void rtl_hw_start_8168h_1(struct rtl8169_private *tp)
 {
 	void __iomem *ioaddr = tp->mmio_addr;
 	struct pci_dev *pdev = tp->pci_dev;
-	u16 rg_saw_cnt;
+	int rg_saw_cnt;
 	u32 data;
 	static const struct ephy_info e_info_8168h_1[] = {
 		{ 0x1e, 0x0800,	0x0001 },
@@ -6170,7 +6117,7 @@ static void rtl_hw_start_8168h_1(struct rtl8169_private *tp)
 	RTL_W8(EEE_LED, RTL_R8(EEE_LED) & ~0x07);
 
 	RTL_W8(DLLPR, RTL_R8(DLLPR) & ~PFM_EN);
-	RTL_W8(DLLPR, RTL_R8(MISC_1) & ~PFM_D3COLD_EN);
+	RTL_W8(MISC_1, RTL_R8(MISC_1) & ~PFM_D3COLD_EN);
 
 	RTL_W8(DLLPR, RTL_R8(DLLPR) & ~TX_10M_PS_EN);
 
@@ -6179,7 +6126,7 @@ static void rtl_hw_start_8168h_1(struct rtl8169_private *tp)
 	rtl_pcie_state_l2l3_enable(tp, false);
 
 	rtl_writephy(tp, 0x1f, 0x0c42);
-	rg_saw_cnt = rtl_readphy(tp, 0x13);
+	rg_saw_cnt = (rtl_readphy(tp, 0x13) & 0x3fff);
 	rtl_writephy(tp, 0x1f, 0x0000);
 	if (rg_saw_cnt > 0) {
 		u16 sw_cnt_1ms_ini;
@@ -6187,28 +6134,28 @@ static void rtl_hw_start_8168h_1(struct rtl8169_private *tp)
 		sw_cnt_1ms_ini = 16000000/rg_saw_cnt;
 		sw_cnt_1ms_ini &= 0x0fff;
 		data = r8168_mac_ocp_read(tp, 0xd412);
-		data &= 0x0fff;
+		data &= ~0x0fff;
 		data |= sw_cnt_1ms_ini;
 		r8168_mac_ocp_write(tp, 0xd412, data);
 	}
 
 	data = r8168_mac_ocp_read(tp, 0xe056);
-	data &= 0xf0;
-	data |= 0x07;
+	data &= ~0xf0;
+	data |= 0x70;
 	r8168_mac_ocp_write(tp, 0xe056, data);
 
 	data = r8168_mac_ocp_read(tp, 0xe052);
-	data &= 0x8008;
-	data |= 0x6000;
+	data &= ~0x6000;
+	data |= 0x8008;
 	r8168_mac_ocp_write(tp, 0xe052, data);
 
 	data = r8168_mac_ocp_read(tp, 0xe0d6);
-	data &= 0x01ff;
+	data &= ~0x01ff;
 	data |= 0x017f;
 	r8168_mac_ocp_write(tp, 0xe0d6, data);
 
 	data = r8168_mac_ocp_read(tp, 0xd420);
-	data &= 0x0fff;
+	data &= ~0x0fff;
 	data |= 0x047f;
 	r8168_mac_ocp_write(tp, 0xd420, data);
 
@@ -6295,7 +6242,7 @@ static void rtl_hw_start_8168ep_2(struct rtl8169_private *tp)
 	rtl_hw_start_8168ep(tp);
 
 	RTL_W8(DLLPR, RTL_R8(DLLPR) & ~PFM_EN);
-	RTL_W8(DLLPR, RTL_R8(MISC_1) & ~PFM_D3COLD_EN);
+	RTL_W8(MISC_1, RTL_R8(MISC_1) & ~PFM_D3COLD_EN);
 }
 
 static void rtl_hw_start_8168ep_3(struct rtl8169_private *tp)
@@ -6317,7 +6264,7 @@ static void rtl_hw_start_8168ep_3(struct rtl8169_private *tp)
 	rtl_hw_start_8168ep(tp);
 
 	RTL_W8(DLLPR, RTL_R8(DLLPR) & ~PFM_EN);
-	RTL_W8(DLLPR, RTL_R8(MISC_1) & ~PFM_D3COLD_EN);
+	RTL_W8(MISC_1, RTL_R8(MISC_1) & ~PFM_D3COLD_EN);
 
 	data = r8168_mac_ocp_read(tp, 0xd3e2);
 	data &= 0xf000;
@@ -7472,15 +7419,15 @@ process_pkt:
 
 			rtl8169_rx_vlan_tag(desc, skb);
 
+			if (skb->pkt_type == PACKET_MULTICAST)
+				dev->stats.multicast++;
+
 			napi_gro_receive(&tp->napi, skb);
 
 			u64_stats_update_begin(&tp->rx_stats.syncp);
 			tp->rx_stats.packets++;
 			tp->rx_stats.bytes += pkt_size;
 			u64_stats_update_end(&tp->rx_stats.syncp);
-
-			if (skb->pkt_type == PACKET_MULTICAST)
-				dev->stats.multicast++;
 		}
 release_descriptor:
 		desc->opts2 = 0;
@@ -7780,9 +7727,13 @@ rtl8169_get_stats64(struct net_device *dev, struct rtnl_link_stats64 *stats)
 {
 	struct rtl8169_private *tp = netdev_priv(dev);
 	void __iomem *ioaddr = tp->mmio_addr;
+	struct pci_dev *pdev = tp->pci_dev;
+	struct rtl8169_counters *counters = tp->counters;
 	unsigned int start;
 
-	if (netif_running(dev))
+	pm_runtime_get_noresume(&pdev->dev);
+
+	if (netif_running(dev) && pm_runtime_active(&pdev->dev))
 		rtl8169_rx_missed(dev, ioaddr);
 
 	do {
@@ -7810,18 +7761,21 @@ rtl8169_get_stats64(struct net_device *dev, struct rtnl_link_stats64 *stats)
 	 * Fetch additonal counter values missing in stats collected by driver
 	 * from tally counters.
 	 */
-	rtl8169_update_counters(dev);
+	if (pm_runtime_active(&pdev->dev))
+		rtl8169_update_counters(dev);
 
 	/*
 	 * Subtract values fetched during initalization.
 	 * See rtl8169_init_counter_offsets for a description why we do that.
 	 */
-	stats->tx_errors = le64_to_cpu(tp->counters.tx_errors) -
+	stats->tx_errors = le64_to_cpu(counters->tx_errors) -
 		le64_to_cpu(tp->tc_offset.tx_errors);
-	stats->collisions = le32_to_cpu(tp->counters.tx_multi_collision) -
+	stats->collisions = le32_to_cpu(counters->tx_multi_collision) -
 		le32_to_cpu(tp->tc_offset.tx_multi_collision);
-	stats->tx_aborted_errors = le16_to_cpu(tp->counters.tx_aborted) -
+	stats->tx_aborted_errors = le16_to_cpu(counters->tx_aborted) -
 		le16_to_cpu(tp->tc_offset.tx_aborted);
+
+	pm_runtime_put_noidle(&pdev->dev);
 
 	return stats;
 }
@@ -7901,6 +7855,10 @@ static int rtl8169_runtime_suspend(struct device *device)
 	rtl_unlock_work(tp);
 
 	rtl8169_net_suspend(dev);
+
+	/* Update counters before going runtime suspend */
+	rtl8169_rx_missed(dev, tp->mmio_addr);
+	rtl8169_update_counters(dev);
 
 	return 0;
 }
@@ -8021,6 +7979,9 @@ static void rtl_remove_one(struct pci_dev *pdev)
 	netif_napi_del(&tp->napi);
 
 	unregister_netdev(dev);
+
+	dma_free_coherent(&tp->pci_dev->dev, sizeof(*tp->counters),
+			  tp->counters, tp->counters_phys_addr);
 
 	rtl_release_firmware(tp);
 
@@ -8263,20 +8224,6 @@ static int rtl_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto err_out_mwi_2;
 	}
 
-	tp->cp_cmd = 0;
-
-	if ((sizeof(dma_addr_t) > 4) &&
-	    !pci_set_dma_mask(pdev, DMA_BIT_MASK(64)) && use_dac) {
-		tp->cp_cmd |= PCIDAC;
-		dev->features |= NETIF_F_HIGHDMA;
-	} else {
-		rc = pci_set_dma_mask(pdev, DMA_BIT_MASK(32));
-		if (rc < 0) {
-			netif_err(tp, probe, dev, "DMA configuration failed\n");
-			goto err_out_free_res_3;
-		}
-	}
-
 	/* ioremap MMIO region */
 	ioaddr = ioremap(pci_resource_start(pdev, region), R8169_REGS_SIZE);
 	if (!ioaddr) {
@@ -8291,6 +8238,25 @@ static int rtl_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	/* Identify chip attached to board */
 	rtl8169_get_mac_version(tp, dev, cfg->default_ver);
+
+	tp->cp_cmd = 0;
+
+	if ((sizeof(dma_addr_t) > 4) &&
+	    (use_dac == 1 || (use_dac == -1 && pci_is_pcie(pdev) &&
+			      tp->mac_version >= RTL_GIGA_MAC_VER_18)) &&
+	    !pci_set_dma_mask(pdev, DMA_BIT_MASK(64))) {
+
+		/* CPlusCmd Dual Access Cycle is only needed for non-PCIe */
+		if (!pci_is_pcie(pdev))
+			tp->cp_cmd |= PCIDAC;
+		dev->features |= NETIF_F_HIGHDMA;
+	} else {
+		rc = pci_set_dma_mask(pdev, DMA_BIT_MASK(32));
+		if (rc < 0) {
+			netif_err(tp, probe, dev, "DMA configuration failed\n");
+			goto err_out_unmap_4;
+		}
+	}
 
 	rtl_init_rxcfg(tp);
 
@@ -8447,9 +8413,16 @@ static int rtl_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	tp->rtl_fw = RTL_FIRMWARE_UNKNOWN;
 
+	tp->counters = dma_alloc_coherent (&pdev->dev, sizeof(*tp->counters),
+					   &tp->counters_phys_addr, GFP_KERNEL);
+	if (!tp->counters) {
+		rc = -ENOMEM;
+		goto err_out_msi_5;
+	}
+
 	rc = register_netdev(dev);
 	if (rc < 0)
-		goto err_out_msi_4;
+		goto err_out_cnt_6;
 
 	pci_set_drvdata(pdev, dev);
 
@@ -8483,9 +8456,13 @@ static int rtl_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 out:
 	return rc;
 
-err_out_msi_4:
+err_out_cnt_6:
+	dma_free_coherent(&pdev->dev, sizeof(*tp->counters), tp->counters,
+			  tp->counters_phys_addr);
+err_out_msi_5:
 	netif_napi_del(&tp->napi);
 	rtl_disable_msi(pdev, tp);
+err_out_unmap_4:
 	iounmap(ioaddr);
 err_out_free_res_3:
 	pci_release_regions(pdev);

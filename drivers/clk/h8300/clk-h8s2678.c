@@ -8,6 +8,7 @@
 #include <linux/err.h>
 #include <linux/device.h>
 #include <linux/of_address.h>
+#include <linux/slab.h>
 
 static DEFINE_SPINLOCK(clklock);
 
@@ -82,7 +83,7 @@ static const struct clk_ops pll_ops = {
 
 static void __init h8s2678_pll_clk_setup(struct device_node *node)
 {
-	int num_parents;
+	unsigned int num_parents;
 	struct clk *clk;
 	const char *clk_name = node->name;
 	const char *parent_name;
@@ -90,7 +91,7 @@ static void __init h8s2678_pll_clk_setup(struct device_node *node)
 	struct clk_init_data init;
 
 	num_parents = of_clk_get_parent_count(node);
-	if (num_parents < 1) {
+	if (!num_parents) {
 		pr_err("%s: no parent found", clk_name);
 		return;
 	}

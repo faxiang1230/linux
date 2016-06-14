@@ -253,13 +253,12 @@ static struct gr_dma_desc *gr_alloc_dma_desc(struct gr_ep *ep, gfp_t gfp_flags)
 	dma_addr_t paddr;
 	struct gr_dma_desc *dma_desc;
 
-	dma_desc = dma_pool_alloc(ep->dev->desc_pool, gfp_flags, &paddr);
+	dma_desc = dma_pool_zalloc(ep->dev->desc_pool, gfp_flags, &paddr);
 	if (!dma_desc) {
 		dev_err(ep->dev->dev, "Could not allocate from DMA pool\n");
 		return NULL;
 	}
 
-	memset(dma_desc, 0, sizeof(*dma_desc));
 	dma_desc->paddr = paddr;
 
 	return dma_desc;
@@ -2117,8 +2116,7 @@ static int gr_remove(struct platform_device *pdev)
 		return -EBUSY;
 
 	gr_dfs_delete(dev);
-	if (dev->desc_pool)
-		dma_pool_destroy(dev->desc_pool);
+	dma_pool_destroy(dev->desc_pool);
 	platform_set_drvdata(pdev, NULL);
 
 	gr_free_request(&dev->epi[0].ep, &dev->ep0reqi->req);

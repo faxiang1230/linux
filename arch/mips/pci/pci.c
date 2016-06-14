@@ -83,9 +83,6 @@ static void pcibios_scanbus(struct pci_controller *hose)
 	LIST_HEAD(resources);
 	struct pci_bus *bus;
 
-	if (!hose->iommu)
-		PCI_DMA_BUS_IS_PHYS = 1;
-
 	if (hose->get_busno && pci_has_flag(PCI_PROBE_ONLY))
 		next_busno = (*hose->get_busno)();
 
@@ -311,6 +308,12 @@ int pcibios_enable_device(struct pci_dev *dev, int mask)
 
 void pcibios_fixup_bus(struct pci_bus *bus)
 {
+	struct pci_dev *dev = bus->self;
+
+	if (pci_has_flag(PCI_PROBE_ONLY) && dev &&
+	    (dev->class >> 8) == PCI_CLASS_BRIDGE_PCI) {
+		pci_read_bridge_bases(bus);
+	}
 }
 
 EXPORT_SYMBOL(PCIBIOS_MIN_IO);

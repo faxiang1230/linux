@@ -189,6 +189,7 @@ static int power_vag_event(struct snd_soc_dapm_widget *w,
 	case SND_SOC_DAPM_POST_PMU:
 		snd_soc_update_bits(codec, SGTL5000_CHIP_ANA_POWER,
 			SGTL5000_VAG_POWERUP, SGTL5000_VAG_POWERUP);
+		msleep(400);
 		break;
 
 	case SND_SOC_DAPM_PRE_PMD:
@@ -1376,8 +1377,8 @@ static int sgtl5000_probe(struct snd_soc_codec *codec)
 			sgtl5000->micbias_resistor << SGTL5000_BIAS_R_SHIFT);
 
 	snd_soc_update_bits(codec, SGTL5000_CHIP_MIC_CTRL,
-			SGTL5000_BIAS_R_MASK,
-			sgtl5000->micbias_voltage << SGTL5000_BIAS_R_SHIFT);
+			SGTL5000_BIAS_VOLT_MASK,
+			sgtl5000->micbias_voltage << SGTL5000_BIAS_VOLT_SHIFT);
 	/*
 	 * disable DAP
 	 * TODO:
@@ -1549,7 +1550,7 @@ static int sgtl5000_i2c_probe(struct i2c_client *client,
 			else {
 				sgtl5000->micbias_voltage = 0;
 				dev_err(&client->dev,
-					"Unsuitable MicBias resistor\n");
+					"Unsuitable MicBias voltage\n");
 			}
 		} else {
 			sgtl5000->micbias_voltage = 0;

@@ -71,7 +71,7 @@ static inline int amdgpu_bo_reserve(struct amdgpu_bo *bo, bool no_intr)
 {
 	int r;
 
-	r = ttm_bo_reserve(&bo->tbo, !no_intr, false, false, 0);
+	r = ttm_bo_reserve(&bo->tbo, !no_intr, false, NULL);
 	if (unlikely(r != 0)) {
 		if (r != -ERESTARTSYS)
 			dev_err(bo->adev->dev, "%p reserve failed\n", bo);
@@ -96,6 +96,7 @@ static inline void amdgpu_bo_unreserve(struct amdgpu_bo *bo)
  */
 static inline u64 amdgpu_bo_gpu_offset(struct amdgpu_bo *bo)
 {
+	WARN_ON_ONCE(bo->tbo.mem.mem_type == TTM_PL_SYSTEM);
 	return bo->tbo.offset;
 }
 
@@ -129,12 +130,14 @@ int amdgpu_bo_create(struct amdgpu_device *adev,
 			    unsigned long size, int byte_align,
 			    bool kernel, u32 domain, u64 flags,
 			    struct sg_table *sg,
+			    struct reservation_object *resv,
 			    struct amdgpu_bo **bo_ptr);
 int amdgpu_bo_create_restricted(struct amdgpu_device *adev,
 				unsigned long size, int byte_align,
 				bool kernel, u32 domain, u64 flags,
 				struct sg_table *sg,
 				struct ttm_placement *placement,
+			        struct reservation_object *resv,
 				struct amdgpu_bo **bo_ptr);
 int amdgpu_bo_kmap(struct amdgpu_bo *bo, void **ptr);
 void amdgpu_bo_kunmap(struct amdgpu_bo *bo);
@@ -146,7 +149,6 @@ int amdgpu_bo_pin_restricted(struct amdgpu_bo *bo, u32 domain,
 			     u64 *gpu_addr);
 int amdgpu_bo_unpin(struct amdgpu_bo *bo);
 int amdgpu_bo_evict_vram(struct amdgpu_device *adev);
-void amdgpu_bo_force_delete(struct amdgpu_device *adev);
 int amdgpu_bo_init(struct amdgpu_device *adev);
 void amdgpu_bo_fini(struct amdgpu_device *adev);
 int amdgpu_bo_fbdev_mmap(struct amdgpu_bo *bo,
@@ -187,10 +189,9 @@ int amdgpu_sa_bo_manager_start(struct amdgpu_device *adev,
 				      struct amdgpu_sa_manager *sa_manager);
 int amdgpu_sa_bo_manager_suspend(struct amdgpu_device *adev,
 					struct amdgpu_sa_manager *sa_manager);
-int amdgpu_sa_bo_new(struct amdgpu_device *adev,
-			    struct amdgpu_sa_manager *sa_manager,
-			    struct amdgpu_sa_bo **sa_bo,
-			    unsigned size, unsigned align);
+int amdgpu_sa_bo_new(struct amdgpu_sa_manager *sa_manager,
+		     struct amdgpu_sa_bo **sa_bo,
+		     unsigned size, unsigned align);
 void amdgpu_sa_bo_free(struct amdgpu_device *adev,
 			      struct amdgpu_sa_bo **sa_bo,
 			      struct fence *fence);

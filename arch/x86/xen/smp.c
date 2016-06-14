@@ -112,7 +112,7 @@ asmlinkage __visible void cpu_bringup_and_idle(int cpu)
 		xen_pvh_secondary_vcpu_init(cpu);
 #endif
 	cpu_bringup();
-	cpu_startup_entry(CPUHP_ONLINE);
+	cpu_startup_entry(CPUHP_AP_ONLINE_IDLE);
 }
 
 static void xen_smp_intr_free(unsigned int cpu)
@@ -453,7 +453,7 @@ cpu_initialize_context(unsigned int cpu, struct task_struct *idle)
 	}
 #endif
 	ctxt->user_regs.esp = idle->thread.sp0 - sizeof(struct pt_regs);
-	ctxt->ctrlreg[3] = xen_pfn_to_cr3(virt_to_mfn(swapper_pg_dir));
+	ctxt->ctrlreg[3] = xen_pfn_to_cr3(virt_to_gfn(swapper_pg_dir));
 	if (HYPERVISOR_vcpu_op(VCPUOP_initialise, cpu, ctxt))
 		BUG();
 
@@ -545,6 +545,8 @@ static void xen_play_dead(void) /* used only with HOTPLUG_CPU */
 	 * data back is to call:
 	 */
 	tick_nohz_idle_enter();
+
+	cpu_startup_entry(CPUHP_AP_ONLINE_IDLE);
 }
 
 #else /* !CONFIG_HOTPLUG_CPU */

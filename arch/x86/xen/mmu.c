@@ -1256,7 +1256,7 @@ static void __init xen_pagetable_cleanhighmap(void)
 	xen_cleanhighmap(addr, addr + size);
 	xen_start_info->pt_base = (unsigned long)__va(__pa(xen_start_info->pt_base));
 #ifdef DEBUG
-	/* This is superflous and is not neccessary, but you know what
+	/* This is superfluous and is not necessary, but you know what
 	 * lets do it. The MODULES_VADDR -> MODULES_END should be clear of
 	 * anything at this stage. */
 	xen_cleanhighmap(MODULES_VADDR, roundup(MODULES_VADDR, PUD_SIZE) - 1);
@@ -1474,7 +1474,7 @@ static void xen_write_cr3(unsigned long cr3)
 /*
  * At the start of the day - when Xen launches a guest, it has already
  * built pagetables for the guest. We diligently look over them
- * in xen_setup_kernel_pagetable and graft as appropiate them in the
+ * in xen_setup_kernel_pagetable and graft as appropriate them in the
  * init_level4_pgt and its friends. Then when we are happy we load
  * the new init_level4_pgt - and continue on.
  *
@@ -2436,7 +2436,6 @@ static const struct pv_mmu_ops xen_mmu_ops __initconst = {
 	.flush_tlb_others = xen_flush_tlb_others,
 
 	.pte_update = paravirt_nop,
-	.pte_update_defer = paravirt_nop,
 
 	.pgd_alloc = xen_pgd_alloc,
 	.pgd_free = xen_pgd_free,
@@ -2495,14 +2494,9 @@ void __init xen_init_mmu_ops(void)
 {
 	x86_init.paging.pagetable_init = xen_pagetable_init;
 
-	/* Optimization - we can use the HVM one but it has no idea which
-	 * VCPUs are descheduled - which means that it will needlessly IPI
-	 * them. Xen knows so let it do the job.
-	 */
-	if (xen_feature(XENFEAT_auto_translated_physmap)) {
-		pv_mmu_ops.flush_tlb_others = xen_flush_tlb_others;
+	if (xen_feature(XENFEAT_auto_translated_physmap))
 		return;
-	}
+
 	pv_mmu_ops = xen_mmu_ops;
 
 	memset(dummy_mapping, 0xff, PAGE_SIZE);
@@ -2798,7 +2792,7 @@ static int remap_area_mfn_pte_fn(pte_t *ptep, pgtable_t token,
 	struct remap_data *rmd = data;
 	pte_t pte = pte_mkspecial(mfn_pte(*rmd->mfn, rmd->prot));
 
-	/* If we have a contigious range, just update the mfn itself,
+	/* If we have a contiguous range, just update the mfn itself,
 	   else update pointer to be "next mfn". */
 	if (rmd->contiguous)
 		(*rmd->mfn)++;
@@ -2812,9 +2806,9 @@ static int remap_area_mfn_pte_fn(pte_t *ptep, pgtable_t token,
 	return 0;
 }
 
-static int do_remap_mfn(struct vm_area_struct *vma,
+static int do_remap_gfn(struct vm_area_struct *vma,
 			unsigned long addr,
-			xen_pfn_t *mfn, int nr,
+			xen_pfn_t *gfn, int nr,
 			int *err_ptr, pgprot_t prot,
 			unsigned domid,
 			struct page **pages)
@@ -2830,16 +2824,16 @@ static int do_remap_mfn(struct vm_area_struct *vma,
 	if (xen_feature(XENFEAT_auto_translated_physmap)) {
 #ifdef CONFIG_XEN_PVH
 		/* We need to update the local page tables and the xen HAP */
-		return xen_xlate_remap_gfn_array(vma, addr, mfn, nr, err_ptr,
+		return xen_xlate_remap_gfn_array(vma, addr, gfn, nr, err_ptr,
 						 prot, domid, pages);
 #else
 		return -EINVAL;
 #endif
         }
 
-	rmd.mfn = mfn;
+	rmd.mfn = gfn;
 	rmd.prot = prot;
-	/* We use the err_ptr to indicate if there we are doing a contigious
+	/* We use the err_ptr to indicate if there we are doing a contiguous
 	 * mapping or a discontigious mapping. */
 	rmd.contiguous = !err_ptr;
 
@@ -2865,8 +2859,8 @@ static int do_remap_mfn(struct vm_area_struct *vma,
 						    batch_left, &done, domid);
 
 			/*
-			 * @err_ptr may be the same buffer as @mfn, so
-			 * only clear it after each chunk of @mfn is
+			 * @err_ptr may be the same buffer as @gfn, so
+			 * only clear it after each chunk of @gfn is
 			 * used.
 			 */
 			if (err_ptr) {
@@ -2888,6 +2882,7 @@ static int do_remap_mfn(struct vm_area_struct *vma,
 		addr += range;
 		if (err_ptr)
 			err_ptr += batch;
+		cond_resched();
 	}
 out:
 
@@ -2896,19 +2891,19 @@ out:
 	return err < 0 ? err : mapped;
 }
 
-int xen_remap_domain_mfn_range(struct vm_area_struct *vma,
+int xen_remap_domain_gfn_range(struct vm_area_struct *vma,
 			       unsigned long addr,
-			       xen_pfn_t mfn, int nr,
+			       xen_pfn_t gfn, int nr,
 			       pgprot_t prot, unsigned domid,
 			       struct page **pages)
 {
-	return do_remap_mfn(vma, addr, &mfn, nr, NULL, prot, domid, pages);
+	return do_remap_gfn(vma, addr, &gfn, nr, NULL, prot, domid, pages);
 }
-EXPORT_SYMBOL_GPL(xen_remap_domain_mfn_range);
+EXPORT_SYMBOL_GPL(xen_remap_domain_gfn_range);
 
-int xen_remap_domain_mfn_array(struct vm_area_struct *vma,
+int xen_remap_domain_gfn_array(struct vm_area_struct *vma,
 			       unsigned long addr,
-			       xen_pfn_t *mfn, int nr,
+			       xen_pfn_t *gfn, int nr,
 			       int *err_ptr, pgprot_t prot,
 			       unsigned domid, struct page **pages)
 {
@@ -2917,13 +2912,13 @@ int xen_remap_domain_mfn_array(struct vm_area_struct *vma,
 	 * cause of "wrong memory was mapped in".
 	 */
 	BUG_ON(err_ptr == NULL);
-	return do_remap_mfn(vma, addr, mfn, nr, err_ptr, prot, domid, pages);
+	return do_remap_gfn(vma, addr, gfn, nr, err_ptr, prot, domid, pages);
 }
-EXPORT_SYMBOL_GPL(xen_remap_domain_mfn_array);
+EXPORT_SYMBOL_GPL(xen_remap_domain_gfn_array);
 
 
 /* Returns: 0 success */
-int xen_unmap_domain_mfn_range(struct vm_area_struct *vma,
+int xen_unmap_domain_gfn_range(struct vm_area_struct *vma,
 			       int numpgs, struct page **pages)
 {
 	if (!pages || !xen_feature(XENFEAT_auto_translated_physmap))
@@ -2935,4 +2930,4 @@ int xen_unmap_domain_mfn_range(struct vm_area_struct *vma,
 	return -EINVAL;
 #endif
 }
-EXPORT_SYMBOL_GPL(xen_unmap_domain_mfn_range);
+EXPORT_SYMBOL_GPL(xen_unmap_domain_gfn_range);

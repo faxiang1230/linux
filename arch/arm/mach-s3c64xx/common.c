@@ -39,6 +39,7 @@
 #include <asm/system_misc.h>
 
 #include <mach/map.h>
+#include <mach/irqs.h>
 #include <mach/hardware.h>
 #include <mach/regs-gpio.h>
 #include <mach/gpio-samsung.h>
@@ -208,7 +209,7 @@ void __init s3c64xx_init_io(struct map_desc *mach_desc, int size)
 static __init int s3c64xx_dev_init(void)
 {
 	/* Not applicable when using DT. */
-	if (of_have_populated_dt())
+	if (of_have_populated_dt() || !soc_is_s3c64xx())
 		return 0;
 
 	subsys_system_register(&s3c64xx_subsys, NULL);
@@ -388,22 +389,22 @@ static inline void s3c_irq_demux_eint(unsigned int start, unsigned int end)
 	}
 }
 
-static void s3c_irq_demux_eint0_3(unsigned int irq, struct irq_desc *desc)
+static void s3c_irq_demux_eint0_3(struct irq_desc *desc)
 {
 	s3c_irq_demux_eint(0, 3);
 }
 
-static void s3c_irq_demux_eint4_11(unsigned int irq, struct irq_desc *desc)
+static void s3c_irq_demux_eint4_11(struct irq_desc *desc)
 {
 	s3c_irq_demux_eint(4, 11);
 }
 
-static void s3c_irq_demux_eint12_19(unsigned int irq, struct irq_desc *desc)
+static void s3c_irq_demux_eint12_19(struct irq_desc *desc)
 {
 	s3c_irq_demux_eint(12, 19);
 }
 
-static void s3c_irq_demux_eint20_27(unsigned int irq, struct irq_desc *desc)
+static void s3c_irq_demux_eint20_27(struct irq_desc *desc)
 {
 	s3c_irq_demux_eint(20, 27);
 }
@@ -413,7 +414,7 @@ static int __init s3c64xx_init_irq_eint(void)
 	int irq;
 
 	/* On DT-enabled systems EINTs are handled by pinctrl-s3c64xx driver. */
-	if (of_have_populated_dt())
+	if (of_have_populated_dt() || !soc_is_s3c64xx())
 		return -ENODEV;
 
 	for (irq = IRQ_EINT(0); irq <= IRQ_EINT(27); irq++) {

@@ -158,7 +158,7 @@ gt215_clk_read(struct nvkm_clk *base, enum nv_clk_src src)
 		return read_clk(clk, 0x20, false);
 	case nv_clk_src_vdec:
 		return read_clk(clk, 0x21, false);
-	case nv_clk_src_daemon:
+	case nv_clk_src_pmu:
 		return read_clk(clk, 0x25, false);
 	case nv_clk_src_host:
 		hsrc = (nvkm_rd32(device, 0xc040) & 0x30000000) >> 28;
@@ -326,7 +326,7 @@ gt215_clk_pre(struct nvkm_clk *clk, unsigned long *flags)
 		return -EIO;
 
 	if (nvkm_msec(device, 2000,
-		u32 tmp = nvkm_rd32(device, 0x002504) & 0x0000003f;
+		u32 tmp = nvkm_rd32(device, 0x00251c) & 0x0000003f;
 		if (tmp == 0x0000003f)
 			break;
 	) < 0)

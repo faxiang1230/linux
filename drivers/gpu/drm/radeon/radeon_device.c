@@ -1150,14 +1150,14 @@ static void radeon_check_arguments(struct radeon_device *rdev)
 	}
 
 	if (radeon_vm_size < 1) {
-		dev_warn(rdev->dev, "VM size (%d) to small, min is 1GB\n",
+		dev_warn(rdev->dev, "VM size (%d) too small, min is 1GB\n",
 			 radeon_vm_size);
 		radeon_vm_size = 4;
 	}
 
-       /*
-        * Max GPUVM size for Cayman, SI and CI are 40 bits.
-        */
+	/*
+	 * Max GPUVM size for Cayman, SI and CI are 40 bits.
+	 */
 	if (radeon_vm_size > 1024) {
 		dev_warn(rdev->dev, "VM size (%d) too large, max is 1TB\n",
 			 radeon_vm_size);
@@ -1197,7 +1197,7 @@ static void radeon_check_arguments(struct radeon_device *rdev)
  * radeon_switcheroo_set_state - set switcheroo state
  *
  * @pdev: pci dev pointer
- * @state: vga switcheroo state
+ * @state: vga_switcheroo state
  *
  * Callback for the switcheroo driver.  Suspends or resumes the
  * the asics before or after it is powered up using ACPI methods.
@@ -1230,7 +1230,7 @@ static void radeon_switcheroo_set_state(struct pci_dev *pdev, enum vga_switchero
 		printk(KERN_INFO "radeon: switched off\n");
 		drm_kms_helper_poll_disable(dev);
 		dev->switch_power_state = DRM_SWITCH_POWER_CHANGING;
-		radeon_suspend_kms(dev, true, true);
+		radeon_suspend_kms(dev, true, true, false);
 		dev->switch_power_state = DRM_SWITCH_POWER_OFF;
 	}
 }
@@ -1299,9 +1299,9 @@ int radeon_device_init(struct radeon_device *rdev,
 	}
 	rdev->fence_context = fence_context_alloc(RADEON_NUM_RINGS);
 
-	DRM_INFO("initializing kernel modesetting (%s 0x%04X:0x%04X 0x%04X:0x%04X).\n",
-		radeon_family_name[rdev->family], pdev->vendor, pdev->device,
-		pdev->subsystem_vendor, pdev->subsystem_device);
+	DRM_INFO("initializing kernel modesetting (%s 0x%04X:0x%04X 0x%04X:0x%04X 0x%02X).\n",
+		 radeon_family_name[rdev->family], pdev->vendor, pdev->device,
+		 pdev->subsystem_vendor, pdev->subsystem_device, pdev->revision);
 
 	/* mutex initialization are all done here so we
 	 * can recall function without having locking issues */
@@ -1555,7 +1555,8 @@ void radeon_device_fini(struct radeon_device *rdev)
  * Returns 0 for success or an error on failure.
  * Called at driver suspend.
  */
-int radeon_suspend_kms(struct drm_device *dev, bool suspend, bool fbcon)
+int radeon_suspend_kms(struct drm_device *dev, bool suspend,
+		       bool fbcon, bool freeze)
 {
 	struct radeon_device *rdev;
 	struct drm_crtc *crtc;
@@ -1573,10 +1574,12 @@ int radeon_suspend_kms(struct drm_device *dev, bool suspend, bool fbcon)
 
 	drm_kms_helper_poll_disable(dev);
 
+	drm_modeset_lock_all(dev);
 	/* turn off display hw */
 	list_for_each_entry(connector, &dev->mode_config.connector_list, head) {
 		drm_helper_connector_dpms(connector, DRM_MODE_DPMS_OFF);
 	}
+	drm_modeset_unlock_all(dev);
 
 	/* unpin the front buffers and cursors */
 	list_for_each_entry(crtc, &dev->mode_config.crtc_list, head) {
@@ -1628,7 +1631,10 @@ int radeon_suspend_kms(struct drm_device *dev, bool suspend, bool fbcon)
 	radeon_agp_suspend(rdev);
 
 	pci_save_state(dev->pdev);
-	if (suspend) {
+	if (freeze && rdev->family >= CHIP_R600) {
+		rdev->asic->asic_reset(rdev, true);
+		pci_restore_state(dev->pdev);
+	} else if (suspend) {
 		/* Shut down the device */
 		pci_disable_device(dev->pdev);
 		pci_set_power_state(dev->pdev, PCI_D3hot);
@@ -1734,9 +1740,11 @@ int radeon_resume_kms(struct drm_device *dev, bool resume, bool fbcon)
 	if (fbcon) {
 		drm_helper_resume_force_mode(dev);
 		/* turn on display hw */
+		drm_modeset_lock_all(dev);
 		list_for_each_entry(connector, &dev->mode_config.connector_list, head) {
 			drm_helper_connector_dpms(connector, DRM_MODE_DPMS_ON);
 		}
+		drm_modeset_unlock_all(dev);
 	}
 
 	drm_kms_helper_poll_enable(dev);
@@ -1891,7 +1899,7 @@ int radeon_debugfs_add_files(struct radeon_device *rdev,
 	if (i > RADEON_DEBUGFS_MAX_COMPONENTS) {
 		DRM_ERROR("Reached maximum number of debugfs components.\n");
 		DRM_ERROR("Report so we increase "
-		          "RADEON_DEBUGFS_MAX_COMPONENTS.\n");
+			  "RADEON_DEBUGFS_MAX_COMPONENTS.\n");
 		return -EINVAL;
 	}
 	rdev->debugfs[rdev->debugfs_count].files = files;

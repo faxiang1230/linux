@@ -67,7 +67,8 @@ static inline void gpt_writel(void __iomem *base, u32 value, u32 offset,
 	writel(value, base + 0x20 * gpt_id + offset);
 }
 
-static cycle_t pistachio_clocksource_read_cycles(struct clocksource *cs)
+static cycle_t notrace
+pistachio_clocksource_read_cycles(struct clocksource *cs)
 {
 	struct pistachio_clocksource *pcs = to_pistachio_clocksource(cs);
 	u32 counter, overflw;
@@ -83,7 +84,7 @@ static cycle_t pistachio_clocksource_read_cycles(struct clocksource *cs)
 	counter = gpt_readl(pcs->base, TIMER_CURRENT_VALUE, 0);
 	raw_spin_unlock_irqrestore(&pcs->lock, flags);
 
-	return ~(cycle_t)counter;
+	return (cycle_t)~counter;
 }
 
 static u64 notrace pistachio_read_sched_clock(void)
@@ -162,7 +163,7 @@ static void __init pistachio_clksrc_of_init(struct device_node *node)
 
 	periph_regs = syscon_regmap_lookup_by_phandle(node, "img,cr-periph");
 	if (IS_ERR(periph_regs)) {
-		pr_err("cannot get peripheral regmap (%lu)\n",
+		pr_err("cannot get peripheral regmap (%ld)\n",
 		       PTR_ERR(periph_regs));
 		return;
 	}
@@ -175,7 +176,7 @@ static void __init pistachio_clksrc_of_init(struct device_node *node)
 
 	sys_clk = of_clk_get_by_name(node, "sys");
 	if (IS_ERR(sys_clk)) {
-		pr_err("clock get failed (%lu)\n", PTR_ERR(sys_clk));
+		pr_err("clock get failed (%ld)\n", PTR_ERR(sys_clk));
 		return;
 	}
 

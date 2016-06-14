@@ -25,7 +25,7 @@
 #include "drmP.h"
 #include "amdgpu.h"
 #include "fiji_ppsmc.h"
-#include "fiji_smumgr.h"
+#include "fiji_smum.h"
 #include "smu_ucode_xfer_vi.h"
 #include "amdgpu_ucode.h"
 
@@ -271,6 +271,12 @@ static int fiji_smu_upload_firmware_image(struct amdgpu_device *adev)
 
 	if (!adev->pm.fw)
 		return -EINVAL;
+
+	/* Skip SMC ucode loading on SR-IOV capable boards.
+	 * vbios does this for us in asic_init in that case.
+	 */
+	if (adev->virtualization.supports_sr_iov)
+		return 0;
 
 	hdr = (const struct smc_firmware_header_v1_0 *)adev->pm.fw->data;
 	amdgpu_ucode_print_smc_hdr(&hdr->header);
@@ -764,7 +770,7 @@ int fiji_smu_init(struct amdgpu_device *adev)
 	ret = amdgpu_bo_create(adev, image_size, PAGE_SIZE,
 			       true, AMDGPU_GEM_DOMAIN_VRAM,
 			       AMDGPU_GEM_CREATE_CPU_ACCESS_REQUIRED,
-			       NULL, toc_buf);
+			       NULL, NULL, toc_buf);
 	if (ret) {
 		DRM_ERROR("Failed to allocate memory for TOC buffer\n");
 		return -ENOMEM;
@@ -774,7 +780,7 @@ int fiji_smu_init(struct amdgpu_device *adev)
 	ret = amdgpu_bo_create(adev, smu_internal_buffer_size, PAGE_SIZE,
 			       true, AMDGPU_GEM_DOMAIN_VRAM,
 			       AMDGPU_GEM_CREATE_CPU_ACCESS_REQUIRED,
-			       NULL, smu_buf);
+			       NULL, NULL, smu_buf);
 	if (ret) {
 		DRM_ERROR("Failed to allocate memory for SMU internal buffer\n");
 		return -ENOMEM;

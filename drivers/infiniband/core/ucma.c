@@ -42,6 +42,7 @@
 #include <linux/slab.h>
 #include <linux/sysctl.h>
 #include <linux/module.h>
+#include <linux/nsproxy.h>
 
 #include <rdma/rdma_user_cm.h>
 #include <rdma/ib_marshall.h>
@@ -313,7 +314,7 @@ static void ucma_removal_event_handler(struct rdma_cm_id *cm_id)
 		}
 	}
 	if (!event_found)
-		printk(KERN_ERR "ucma_removal_event_handler: warning: connect request event wasn't found\n");
+		pr_err("ucma_removal_event_handler: warning: connect request event wasn't found\n");
 }
 
 static int ucma_event_handler(struct rdma_cm_id *cm_id,
@@ -472,7 +473,8 @@ static ssize_t ucma_create_id(struct ucma_file *file, const char __user *inbuf,
 		return -ENOMEM;
 
 	ctx->uid = cmd.uid;
-	ctx->cm_id = rdma_create_id(ucma_event_handler, ctx, cmd.ps, qp_type);
+	ctx->cm_id = rdma_create_id(current->nsproxy->net_ns,
+				    ucma_event_handler, ctx, cmd.ps, qp_type);
 	if (IS_ERR(ctx->cm_id)) {
 		ret = PTR_ERR(ctx->cm_id);
 		goto err1;
@@ -1211,7 +1213,6 @@ static int ucma_set_ib_path(struct ucma_context *ctx,
 		return -EINVAL;
 
 	memset(&sa_path, 0, sizeof(sa_path));
-	sa_path.vlan_id = 0xffff;
 
 	ib_sa_unpack_path(path_data->path_rec, &sa_path);
 	ret = rdma_set_ib_paths(ctx->cm_id, &sa_path, 1);
@@ -1573,6 +1574,9 @@ static ssize_t ucma_write(struct file *filp, const char __user *buf,
 	struct rdma_ucm_cmd_hdr hdr;
 	ssize_t ret;
 
+	if (WARN_ON_ONCE(!ib_safe_file_access(filp)))
+		return -EACCES;
+
 	if (len < sizeof(hdr))
 		return -EINVAL;
 
@@ -1624,11 +1628,16 @@ static int ucma_open(struct inode *inode, struct file *filp)
 	if (!file)
 		return -ENOMEM;
 
+	file->close_wq = create_singlethread_workqueue("ucma_close_id");
+	if (!file->close_wq) {
+		kfree(file);
+		return -ENOMEM;
+	}
+
 	INIT_LIST_HEAD(&file->event_list);
 	INIT_LIST_HEAD(&file->ctx_list);
 	init_waitqueue_head(&file->poll_wait);
 	mutex_init(&file->mut);
-	file->close_wq = create_singlethread_workqueue("ucma_close_id");
 
 	filp->private_data = file;
 	file->filp = filp;
@@ -1710,13 +1719,13 @@ static int __init ucma_init(void)
 
 	ret = device_create_file(ucma_misc.this_device, &dev_attr_abi_version);
 	if (ret) {
-		printk(KERN_ERR "rdma_ucm: couldn't create abi_version attr\n");
+		pr_err("rdma_ucm: couldn't create abi_version attr\n");
 		goto err1;
 	}
 
 	ucma_ctl_table_hdr = register_net_sysctl(&init_net, "net/rdma_ucm", ucma_ctl_table);
 	if (!ucma_ctl_table_hdr) {
-		printk(KERN_ERR "rdma_ucm: couldn't register sysctl paths\n");
+		pr_err("rdma_ucm: couldn't register sysctl paths\n");
 		ret = -ENOMEM;
 		goto err2;
 	}

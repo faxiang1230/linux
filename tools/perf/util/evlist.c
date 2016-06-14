@@ -18,13 +18,14 @@
 #include <unistd.h>
 
 #include "parse-events.h"
-#include "parse-options.h"
+#include <subcmd/parse-options.h>
 
 #include <sys/mman.h>
 
 #include <linux/bitops.h>
 #include <linux/hash.h>
 #include <linux/log2.h>
+#include <linux/err.h>
 
 static void perf_evlist__mmap_put(struct perf_evlist *evlist, int idx);
 static void __perf_evlist__munmap(struct perf_evlist *evlist, int idx);
@@ -43,6 +44,7 @@ void perf_evlist__init(struct perf_evlist *evlist, struct cpu_map *cpus,
 	perf_evlist__set_maps(evlist, cpus, threads);
 	fdarray__init(&evlist->pollfd, 64);
 	evlist->workload.pid = -1;
+	evlist->backward = false;
 }
 
 struct perf_evlist *perf_evlist__new(void)
@@ -60,6 +62,18 @@ struct perf_evlist *perf_evlist__new_default(void)
 	struct perf_evlist *evlist = perf_evlist__new();
 
 	if (evlist && perf_evlist__add_default(evlist)) {
+		perf_evlist__delete(evlist);
+		evlist = NULL;
+	}
+
+	return evlist;
+}
+
+struct perf_evlist *perf_evlist__new_dummy(void)
+{
+	struct perf_evlist *evlist = perf_evlist__new();
+
+	if (evlist && perf_evlist__add_dummy(evlist)) {
 		perf_evlist__delete(evlist);
 		evlist = NULL;
 	}
@@ -124,6 +138,33 @@ void perf_evlist__delete(struct perf_evlist *evlist)
 	free(evlist);
 }
 
+static void __perf_evlist__propagate_maps(struct perf_evlist *evlist,
+					  struct perf_evsel *evsel)
+{
+	/*
+	 * We already have cpus for evsel (via PMU sysfs) so
+	 * keep it, if there's no target cpu list defined.
+	 */
+	if (!evsel->own_cpus || evlist->has_user_cpus) {
+		cpu_map__put(evsel->cpus);
+		evsel->cpus = cpu_map__get(evlist->cpus);
+	} else if (evsel->cpus != evsel->own_cpus) {
+		cpu_map__put(evsel->cpus);
+		evsel->cpus = cpu_map__get(evsel->own_cpus);
+	}
+
+	thread_map__put(evsel->threads);
+	evsel->threads = thread_map__get(evlist->threads);
+}
+
+static void perf_evlist__propagate_maps(struct perf_evlist *evlist)
+{
+	struct perf_evsel *evsel;
+
+	evlist__for_each(evlist, evsel)
+		__perf_evlist__propagate_maps(evlist, evsel);
+}
+
 void perf_evlist__add(struct perf_evlist *evlist, struct perf_evsel *entry)
 {
 	entry->evlist = evlist;
@@ -133,18 +174,26 @@ void perf_evlist__add(struct perf_evlist *evlist, struct perf_evsel *entry)
 
 	if (!evlist->nr_entries++)
 		perf_evlist__set_id_pos(evlist);
+
+	__perf_evlist__propagate_maps(evlist, entry);
+}
+
+void perf_evlist__remove(struct perf_evlist *evlist, struct perf_evsel *evsel)
+{
+	evsel->evlist = NULL;
+	list_del_init(&evsel->node);
+	evlist->nr_entries -= 1;
 }
 
 void perf_evlist__splice_list_tail(struct perf_evlist *evlist,
-				   struct list_head *list,
-				   int nr_entries)
+				   struct list_head *list)
 {
-	bool set_id_pos = !evlist->nr_entries;
+	struct perf_evsel *evsel, *temp;
 
-	list_splice_tail(list, &evlist->entries);
-	evlist->nr_entries += nr_entries;
-	if (set_id_pos)
-		perf_evlist__set_id_pos(evlist);
+	__evlist__for_each_safe(list, temp, evsel) {
+		list_del_init(&evsel->node);
+		perf_evlist__add(evlist, evsel);
+	}
 }
 
 void __perf_evlist__set_leader(struct list_head *list)
@@ -169,6 +218,20 @@ void perf_evlist__set_leader(struct perf_evlist *evlist)
 	}
 }
 
+void perf_event_attr__set_max_precise_ip(struct perf_event_attr *attr)
+{
+	attr->precise_ip = 3;
+
+	while (attr->precise_ip != 0) {
+		int fd = sys_perf_event_open(attr, 0, -1, -1, 0);
+		if (fd != -1) {
+			close(fd);
+			break;
+		}
+		--attr->precise_ip;
+	}
+}
+
 int perf_evlist__add_default(struct perf_evlist *evlist)
 {
 	struct perf_event_attr attr = {
@@ -179,13 +242,15 @@ int perf_evlist__add_default(struct perf_evlist *evlist)
 
 	event_attr_init(&attr);
 
+	perf_event_attr__set_max_precise_ip(&attr);
+
 	evsel = perf_evsel__new(&attr);
 	if (evsel == NULL)
 		goto error;
 
-	/* use strdup() because free(evsel) assumes name is allocated */
-	evsel->name = strdup("cycles");
-	if (!evsel->name)
+	/* use asprintf() because free(evsel) assumes name is allocated */
+	if (asprintf(&evsel->name, "cycles%.*s",
+		     attr.precise_ip ? attr.precise_ip + 1 : 0, ":ppp") < 0)
 		goto error_free;
 
 	perf_evlist__add(evlist, evsel);
@@ -194,6 +259,22 @@ error_free:
 	perf_evsel__delete(evsel);
 error:
 	return -ENOMEM;
+}
+
+int perf_evlist__add_dummy(struct perf_evlist *evlist)
+{
+	struct perf_event_attr attr = {
+		.type	= PERF_TYPE_SOFTWARE,
+		.config = PERF_COUNT_SW_DUMMY,
+		.size	= sizeof(attr), /* to capture ABI version */
+	};
+	struct perf_evsel *evsel = perf_evsel__new(&attr);
+
+	if (evsel == NULL)
+		return -ENOMEM;
+
+	perf_evlist__add(evlist, evsel);
+	return 0;
 }
 
 static int perf_evlist__add_attrs(struct perf_evlist *evlist,
@@ -210,7 +291,7 @@ static int perf_evlist__add_attrs(struct perf_evlist *evlist,
 		list_add_tail(&evsel->node, &head);
 	}
 
-	perf_evlist__splice_list_tail(evlist, &head, nr_attrs);
+	perf_evlist__splice_list_tail(evlist, &head);
 
 	return 0;
 
@@ -265,7 +346,7 @@ int perf_evlist__add_newtp(struct perf_evlist *evlist,
 {
 	struct perf_evsel *evsel = perf_evsel__newtp(sys, name);
 
-	if (evsel == NULL)
+	if (IS_ERR(evsel))
 		return -1;
 
 	evsel->handler = handler;
@@ -284,20 +365,12 @@ static int perf_evlist__nr_threads(struct perf_evlist *evlist,
 
 void perf_evlist__disable(struct perf_evlist *evlist)
 {
-	int cpu, thread;
 	struct perf_evsel *pos;
-	int nr_cpus = cpu_map__nr(evlist->cpus);
-	int nr_threads;
 
-	for (cpu = 0; cpu < nr_cpus; cpu++) {
-		evlist__for_each(evlist, pos) {
-			if (!perf_evsel__is_group_leader(pos) || !pos->fd)
-				continue;
-			nr_threads = perf_evlist__nr_threads(evlist, pos);
-			for (thread = 0; thread < nr_threads; thread++)
-				ioctl(FD(pos, cpu, thread),
-				      PERF_EVENT_IOC_DISABLE, 0);
-		}
+	evlist__for_each(evlist, pos) {
+		if (!perf_evsel__is_group_leader(pos) || !pos->fd)
+			continue;
+		perf_evsel__disable(pos);
 	}
 
 	evlist->enabled = false;
@@ -305,20 +378,12 @@ void perf_evlist__disable(struct perf_evlist *evlist)
 
 void perf_evlist__enable(struct perf_evlist *evlist)
 {
-	int cpu, thread;
 	struct perf_evsel *pos;
-	int nr_cpus = cpu_map__nr(evlist->cpus);
-	int nr_threads;
 
-	for (cpu = 0; cpu < nr_cpus; cpu++) {
-		evlist__for_each(evlist, pos) {
-			if (!perf_evsel__is_group_leader(pos) || !pos->fd)
-				continue;
-			nr_threads = perf_evlist__nr_threads(evlist, pos);
-			for (thread = 0; thread < nr_threads; thread++)
-				ioctl(FD(pos, cpu, thread),
-				      PERF_EVENT_IOC_ENABLE, 0);
-		}
+	evlist__for_each(evlist, pos) {
+		if (!perf_evsel__is_group_leader(pos) || !pos->fd)
+			continue;
+		perf_evsel__enable(pos);
 	}
 
 	evlist->enabled = true;
@@ -327,48 +392,6 @@ void perf_evlist__enable(struct perf_evlist *evlist)
 void perf_evlist__toggle_enable(struct perf_evlist *evlist)
 {
 	(evlist->enabled ? perf_evlist__disable : perf_evlist__enable)(evlist);
-}
-
-int perf_evlist__disable_event(struct perf_evlist *evlist,
-			       struct perf_evsel *evsel)
-{
-	int cpu, thread, err;
-	int nr_cpus = cpu_map__nr(evlist->cpus);
-	int nr_threads = perf_evlist__nr_threads(evlist, evsel);
-
-	if (!evsel->fd)
-		return 0;
-
-	for (cpu = 0; cpu < nr_cpus; cpu++) {
-		for (thread = 0; thread < nr_threads; thread++) {
-			err = ioctl(FD(evsel, cpu, thread),
-				    PERF_EVENT_IOC_DISABLE, 0);
-			if (err)
-				return err;
-		}
-	}
-	return 0;
-}
-
-int perf_evlist__enable_event(struct perf_evlist *evlist,
-			      struct perf_evsel *evsel)
-{
-	int cpu, thread, err;
-	int nr_cpus = cpu_map__nr(evlist->cpus);
-	int nr_threads = perf_evlist__nr_threads(evlist, evsel);
-
-	if (!evsel->fd)
-		return -EINVAL;
-
-	for (cpu = 0; cpu < nr_cpus; cpu++) {
-		for (thread = 0; thread < nr_threads; thread++) {
-			err = ioctl(FD(evsel, cpu, thread),
-				    PERF_EVENT_IOC_ENABLE, 0);
-			if (err)
-				return err;
-		}
-	}
-	return 0;
 }
 
 static int perf_evlist__enable_event_cpu(struct perf_evlist *evlist,
@@ -498,9 +521,9 @@ void perf_evlist__id_add(struct perf_evlist *evlist, struct perf_evsel *evsel,
 	evsel->id[evsel->ids++] = id;
 }
 
-static int perf_evlist__id_add_fd(struct perf_evlist *evlist,
-				  struct perf_evsel *evsel,
-				  int cpu, int thread, int fd)
+int perf_evlist__id_add_fd(struct perf_evlist *evlist,
+			   struct perf_evsel *evsel,
+			   int cpu, int thread, int fd)
 {
 	u64 read_data[4] = { 0, };
 	int id_idx = 1; /* The first entry is the counter value */
@@ -588,6 +611,21 @@ struct perf_evsel *perf_evlist__id2evsel(struct perf_evlist *evlist, u64 id)
 	return NULL;
 }
 
+struct perf_evsel *perf_evlist__id2evsel_strict(struct perf_evlist *evlist,
+						u64 id)
+{
+	struct perf_sample_id *sid;
+
+	if (!id)
+		return NULL;
+
+	sid = perf_evlist__id2sid(evlist, id);
+	if (sid)
+		return sid->evsel;
+
+	return NULL;
+}
+
 static int perf_evlist__event2id(struct perf_evlist *evlist,
 				 union perf_event *event, u64 *id)
 {
@@ -642,53 +680,79 @@ static struct perf_evsel *perf_evlist__event2evsel(struct perf_evlist *evlist,
 	return NULL;
 }
 
-union perf_event *perf_evlist__mmap_read(struct perf_evlist *evlist, int idx)
+static int perf_evlist__set_paused(struct perf_evlist *evlist, bool value)
 {
-	struct perf_mmap *md = &evlist->mmap[idx];
-	u64 head;
-	u64 old = md->prev;
+	int i;
+
+	for (i = 0; i < evlist->nr_mmaps; i++) {
+		int fd = evlist->mmap[i].fd;
+		int err;
+
+		if (fd < 0)
+			continue;
+		err = ioctl(fd, PERF_EVENT_IOC_PAUSE_OUTPUT, value ? 1 : 0);
+		if (err)
+			return err;
+	}
+	return 0;
+}
+
+int perf_evlist__pause(struct perf_evlist *evlist)
+{
+	return perf_evlist__set_paused(evlist, true);
+}
+
+int perf_evlist__resume(struct perf_evlist *evlist)
+{
+	return perf_evlist__set_paused(evlist, false);
+}
+
+/* When check_messup is true, 'end' must points to a good entry */
+static union perf_event *
+perf_mmap__read(struct perf_mmap *md, bool check_messup, u64 start,
+		u64 end, u64 *prev)
+{
 	unsigned char *data = md->base + page_size;
 	union perf_event *event = NULL;
+	int diff = end - start;
 
-	/*
-	 * Check if event was unmapped due to a POLLHUP/POLLERR.
-	 */
-	if (!atomic_read(&md->refcnt))
-		return NULL;
-
-	head = perf_mmap__read_head(md);
-	if (evlist->overwrite) {
+	if (check_messup) {
 		/*
 		 * If we're further behind than half the buffer, there's a chance
 		 * the writer will bite our tail and mess up the samples under us.
 		 *
-		 * If we somehow ended up ahead of the head, we got messed up.
+		 * If we somehow ended up ahead of the 'end', we got messed up.
 		 *
-		 * In either case, truncate and restart at head.
+		 * In either case, truncate and restart at 'end'.
 		 */
-		int diff = head - old;
 		if (diff > md->mask / 2 || diff < 0) {
 			fprintf(stderr, "WARNING: failed to keep up with mmap data.\n");
 
 			/*
-			 * head points to a known good entry, start there.
+			 * 'end' points to a known good entry, start there.
 			 */
-			old = head;
+			start = end;
+			diff = 0;
 		}
 	}
 
-	if (old != head) {
+	if (diff >= (int)sizeof(event->header)) {
 		size_t size;
 
-		event = (union perf_event *)&data[old & md->mask];
+		event = (union perf_event *)&data[start & md->mask];
 		size = event->header.size;
+
+		if (size < sizeof(event->header) || diff < (int)size) {
+			event = NULL;
+			goto broken_event;
+		}
 
 		/*
 		 * Event straddles the mmap boundary -- header should always
 		 * be inside due to u64 alignment of output.
 		 */
-		if ((old & md->mask) + size != ((old + size) & md->mask)) {
-			unsigned int offset = old;
+		if ((start & md->mask) + size != ((start + size) & md->mask)) {
+			unsigned int offset = start;
 			unsigned int len = min(sizeof(*event), size), cpy;
 			void *dst = md->event_copy;
 
@@ -703,12 +767,81 @@ union perf_event *perf_evlist__mmap_read(struct perf_evlist *evlist, int idx)
 			event = (union perf_event *) md->event_copy;
 		}
 
-		old += size;
+		start += size;
 	}
 
-	md->prev = old;
+broken_event:
+	if (prev)
+		*prev = start;
 
 	return event;
+}
+
+union perf_event *perf_evlist__mmap_read(struct perf_evlist *evlist, int idx)
+{
+	struct perf_mmap *md = &evlist->mmap[idx];
+	u64 head;
+	u64 old = md->prev;
+
+	/*
+	 * Check if event was unmapped due to a POLLHUP/POLLERR.
+	 */
+	if (!atomic_read(&md->refcnt))
+		return NULL;
+
+	head = perf_mmap__read_head(md);
+
+	return perf_mmap__read(md, evlist->overwrite, old, head, &md->prev);
+}
+
+union perf_event *
+perf_evlist__mmap_read_backward(struct perf_evlist *evlist, int idx)
+{
+	struct perf_mmap *md = &evlist->mmap[idx];
+	u64 head, end;
+	u64 start = md->prev;
+
+	/*
+	 * Check if event was unmapped due to a POLLHUP/POLLERR.
+	 */
+	if (!atomic_read(&md->refcnt))
+		return NULL;
+
+	head = perf_mmap__read_head(md);
+	if (!head)
+		return NULL;
+
+	/*
+	 * 'head' pointer starts from 0. Kernel minus sizeof(record) form
+	 * it each time when kernel writes to it, so in fact 'head' is
+	 * negative. 'end' pointer is made manually by adding the size of
+	 * the ring buffer to 'head' pointer, means the validate data can
+	 * read is the whole ring buffer. If 'end' is positive, the ring
+	 * buffer has not fully filled, so we must adjust 'end' to 0.
+	 *
+	 * However, since both 'head' and 'end' is unsigned, we can't
+	 * simply compare 'end' against 0. Here we compare '-head' and
+	 * the size of the ring buffer, where -head is the number of bytes
+	 * kernel write to the ring buffer.
+	 */
+	if (-head < (u64)(md->mask + 1))
+		end = 0;
+	else
+		end = head + md->mask + 1;
+
+	return perf_mmap__read(md, false, start, end, &md->prev);
+}
+
+void perf_evlist__mmap_read_catchup(struct perf_evlist *evlist, int idx)
+{
+	struct perf_mmap *md = &evlist->mmap[idx];
+	u64 head;
+
+	if (!atomic_read(&md->refcnt))
+		return;
+
+	head = perf_mmap__read_head(md);
+	md->prev = head;
 }
 
 static bool perf_mmap__empty(struct perf_mmap *md)
@@ -776,6 +909,7 @@ static void __perf_evlist__munmap(struct perf_evlist *evlist, int idx)
 	if (evlist->mmap[idx].base != NULL) {
 		munmap(evlist->mmap[idx].base, evlist->mmap_len);
 		evlist->mmap[idx].base = NULL;
+		evlist->mmap[idx].fd = -1;
 		atomic_set(&evlist->mmap[idx].refcnt, 0);
 	}
 	auxtrace_mmap__munmap(&evlist->mmap[idx].auxtrace_mmap);
@@ -796,10 +930,14 @@ void perf_evlist__munmap(struct perf_evlist *evlist)
 
 static int perf_evlist__alloc_mmap(struct perf_evlist *evlist)
 {
+	int i;
+
 	evlist->nr_mmaps = cpu_map__nr(evlist->cpus);
 	if (cpu_map__empty(evlist->cpus))
 		evlist->nr_mmaps = thread_map__nr(evlist->threads);
 	evlist->mmap = zalloc(evlist->nr_mmaps * sizeof(struct perf_mmap));
+	for (i = 0; i < evlist->nr_mmaps; i++)
+		evlist->mmap[i].fd = -1;
 	return evlist->mmap != NULL ? 0 : -ENOMEM;
 }
 
@@ -836,6 +974,7 @@ static int __perf_evlist__mmap(struct perf_evlist *evlist, int idx,
 		evlist->mmap[idx].base = NULL;
 		return -1;
 	}
+	evlist->mmap[idx].fd = fd;
 
 	if (auxtrace_mmap__mmap(&evlist->mmap[idx].auxtrace_mmap,
 				&mp->auxtrace_mp, evlist->mmap[idx].base, fd))
@@ -949,26 +1088,34 @@ out_unmap:
 	return -1;
 }
 
+unsigned long perf_event_mlock_kb_in_pages(void)
+{
+	unsigned long pages;
+	int max;
+
+	if (sysctl__read_int("kernel/perf_event_mlock_kb", &max) < 0) {
+		/*
+		 * Pick a once upon a time good value, i.e. things look
+		 * strange since we can't read a sysctl value, but lets not
+		 * die yet...
+		 */
+		max = 512;
+	} else {
+		max -= (page_size / 1024);
+	}
+
+	pages = (max * 1024) / page_size;
+	if (!is_power_of_2(pages))
+		pages = rounddown_pow_of_two(pages);
+
+	return pages;
+}
+
 static size_t perf_evlist__mmap_size(unsigned long pages)
 {
-	if (pages == UINT_MAX) {
-		int max;
-
-		if (sysctl__read_int("kernel/perf_event_mlock_kb", &max) < 0) {
-			/*
-			 * Pick a once upon a time good value, i.e. things look
-			 * strange since we can't read a sysctl value, but lets not
-			 * die yet...
-			 */
-			max = 512;
-		} else {
-			max -= (page_size / 1024);
-		}
-
-		pages = (max * 1024) / page_size;
-		if (!is_power_of_2(pages))
-			pages = rounddown_pow_of_two(pages);
-	} else if (!is_power_of_2(pages))
+	if (pages == UINT_MAX)
+		pages = perf_event_mlock_kb_in_pages();
+	else if (!is_power_of_2(pages))
 		return 0;
 
 	return (pages + 1) * page_size;
@@ -1103,71 +1250,74 @@ int perf_evlist__mmap(struct perf_evlist *evlist, unsigned int pages,
 	return perf_evlist__mmap_ex(evlist, pages, overwrite, 0, false);
 }
 
-static int perf_evlist__propagate_maps(struct perf_evlist *evlist,
-				       bool has_user_cpus)
-{
-	struct perf_evsel *evsel;
-
-	evlist__for_each(evlist, evsel) {
-		/*
-		 * We already have cpus for evsel (via PMU sysfs) so
-		 * keep it, if there's no target cpu list defined.
-		 */
-		if (evsel->cpus && has_user_cpus)
-			cpu_map__put(evsel->cpus);
-
-		if (!evsel->cpus || has_user_cpus)
-			evsel->cpus = cpu_map__get(evlist->cpus);
-
-		evsel->threads = thread_map__get(evlist->threads);
-
-		if ((evlist->cpus && !evsel->cpus) ||
-		    (evlist->threads && !evsel->threads))
-			return -ENOMEM;
-	}
-
-	return 0;
-}
-
 int perf_evlist__create_maps(struct perf_evlist *evlist, struct target *target)
 {
-	evlist->threads = thread_map__new_str(target->pid, target->tid,
-					      target->uid);
+	struct cpu_map *cpus;
+	struct thread_map *threads;
 
-	if (evlist->threads == NULL)
+	threads = thread_map__new_str(target->pid, target->tid, target->uid);
+
+	if (!threads)
 		return -1;
 
 	if (target__uses_dummy_map(target))
-		evlist->cpus = cpu_map__dummy_new();
+		cpus = cpu_map__dummy_new();
 	else
-		evlist->cpus = cpu_map__new(target->cpu_list);
+		cpus = cpu_map__new(target->cpu_list);
 
-	if (evlist->cpus == NULL)
+	if (!cpus)
 		goto out_delete_threads;
 
-	return perf_evlist__propagate_maps(evlist, !!target->cpu_list);
+	evlist->has_user_cpus = !!target->cpu_list;
+
+	perf_evlist__set_maps(evlist, cpus, threads);
+
+	return 0;
 
 out_delete_threads:
-	thread_map__put(evlist->threads);
-	evlist->threads = NULL;
+	thread_map__put(threads);
 	return -1;
 }
 
-int perf_evlist__set_maps(struct perf_evlist *evlist,
-			  struct cpu_map *cpus,
-			  struct thread_map *threads)
+void perf_evlist__set_maps(struct perf_evlist *evlist, struct cpu_map *cpus,
+			   struct thread_map *threads)
 {
-	if (evlist->cpus)
+	/*
+	 * Allow for the possibility that one or another of the maps isn't being
+	 * changed i.e. don't put it.  Note we are assuming the maps that are
+	 * being applied are brand new and evlist is taking ownership of the
+	 * original reference count of 1.  If that is not the case it is up to
+	 * the caller to increase the reference count.
+	 */
+	if (cpus != evlist->cpus) {
 		cpu_map__put(evlist->cpus);
+		evlist->cpus = cpu_map__get(cpus);
+	}
 
-	evlist->cpus = cpus;
-
-	if (evlist->threads)
+	if (threads != evlist->threads) {
 		thread_map__put(evlist->threads);
+		evlist->threads = thread_map__get(threads);
+	}
 
-	evlist->threads = threads;
+	perf_evlist__propagate_maps(evlist);
+}
 
-	return perf_evlist__propagate_maps(evlist, false);
+void __perf_evlist__set_sample_bit(struct perf_evlist *evlist,
+				   enum perf_event_sample_format bit)
+{
+	struct perf_evsel *evsel;
+
+	evlist__for_each(evlist, evsel)
+		__perf_evsel__set_sample_bit(evsel, bit);
+}
+
+void __perf_evlist__reset_sample_bit(struct perf_evlist *evlist,
+				     enum perf_event_sample_format bit)
+{
+	struct perf_evsel *evsel;
+
+	evlist__for_each(evlist, evsel)
+		__perf_evsel__reset_sample_bit(evsel, bit);
 }
 
 int perf_evlist__apply_filters(struct perf_evlist *evlist, struct perf_evsel **err_evsel)
@@ -1201,6 +1351,9 @@ int perf_evlist__set_filter(struct perf_evlist *evlist, const char *filter)
 	int err = 0;
 
 	evlist__for_each(evlist, evsel) {
+		if (evsel->attr.type != PERF_TYPE_TRACEPOINT)
+			continue;
+
 		err = perf_evsel__set_filter(evsel, filter);
 		if (err)
 			break;
@@ -1387,6 +1540,8 @@ void perf_evlist__close(struct perf_evlist *evlist)
 
 static int perf_evlist__create_syswide_maps(struct perf_evlist *evlist)
 {
+	struct cpu_map	  *cpus;
+	struct thread_map *threads;
 	int err = -ENOMEM;
 
 	/*
@@ -1398,20 +1553,19 @@ static int perf_evlist__create_syswide_maps(struct perf_evlist *evlist)
 	 * error, and we may not want to do that fallback to a
 	 * default cpu identity map :-\
 	 */
-	evlist->cpus = cpu_map__new(NULL);
-	if (evlist->cpus == NULL)
+	cpus = cpu_map__new(NULL);
+	if (!cpus)
 		goto out;
 
-	evlist->threads = thread_map__new_dummy();
-	if (evlist->threads == NULL)
-		goto out_free_cpus;
+	threads = thread_map__new_dummy();
+	if (!threads)
+		goto out_put;
 
-	err = 0;
+	perf_evlist__set_maps(evlist, cpus, threads);
 out:
 	return err;
-out_free_cpus:
-	cpu_map__put(evlist->cpus);
-	evlist->cpus = NULL;
+out_put:
+	cpu_map__put(cpus);
 	goto out;
 }
 
@@ -1433,7 +1587,7 @@ int perf_evlist__open(struct perf_evlist *evlist)
 	perf_evlist__update_id_pos(evlist);
 
 	evlist__for_each(evlist, evsel) {
-		err = perf_evsel__open(evsel, evlist->cpus, evlist->threads);
+		err = perf_evsel__open(evsel, evsel->cpus, evsel->threads);
 		if (err < 0)
 			goto out_err;
 	}
@@ -1601,7 +1755,7 @@ size_t perf_evlist__fprintf(struct perf_evlist *evlist, FILE *fp)
 	return printed + fprintf(fp, "\n");
 }
 
-int perf_evlist__strerror_open(struct perf_evlist *evlist __maybe_unused,
+int perf_evlist__strerror_open(struct perf_evlist *evlist,
 			       int err, char *buf, size_t size)
 {
 	int printed, value;
@@ -1629,7 +1783,25 @@ int perf_evlist__strerror_open(struct perf_evlist *evlist __maybe_unused,
 				    "Hint:\tTry: 'sudo sh -c \"echo -1 > /proc/sys/kernel/perf_event_paranoid\"'\n"
 				    "Hint:\tThe current value is %d.", value);
 		break;
+	case EINVAL: {
+		struct perf_evsel *first = perf_evlist__first(evlist);
+		int max_freq;
+
+		if (sysctl__read_int("kernel/perf_event_max_sample_rate", &max_freq) < 0)
+			goto out_default;
+
+		if (first->attr.sample_freq < (u64)max_freq)
+			goto out_default;
+
+		printed = scnprintf(buf, size,
+				    "Error:\t%s.\n"
+				    "Hint:\tCheck /proc/sys/kernel/perf_event_max_sample_rate.\n"
+				    "Hint:\tThe current value is %d and %" PRIu64 " is being requested.",
+				    emsg, max_freq, first->attr.sample_freq);
+		break;
+	}
 	default:
+out_default:
 		scnprintf(buf, size, "%s", emsg);
 		break;
 	}
@@ -1699,4 +1871,20 @@ void perf_evlist__set_tracking_event(struct perf_evlist *evlist,
 	}
 
 	tracking_evsel->tracking = true;
+}
+
+struct perf_evsel *
+perf_evlist__find_evsel_by_str(struct perf_evlist *evlist,
+			       const char *str)
+{
+	struct perf_evsel *evsel;
+
+	evlist__for_each(evlist, evsel) {
+		if (!evsel->name)
+			continue;
+		if (strcmp(str, evsel->name) == 0)
+			return evsel;
+	}
+
+	return NULL;
 }

@@ -180,7 +180,7 @@ static void intel_hpd_irq_storm_disable(struct drm_i915_private *dev_priv)
 
 	/* Enable polling and queue hotplug re-enabling. */
 	if (hpd_disabled) {
-		drm_kms_helper_poll_enable(dev);
+		drm_kms_helper_poll_enable_locked(dev);
 		mod_delayed_work(system_wq, &dev_priv->hotplug.reenable_work,
 				 msecs_to_jiffies(HPD_STORM_REENABLE_DELAY));
 	}
@@ -407,7 +407,7 @@ void intel_hpd_irq_handler(struct drm_device *dev,
 			 * hotplug bits itself. So only WARN about unexpected
 			 * interrupts on saner platforms.
 			 */
-			WARN_ONCE(INTEL_INFO(dev)->gen >= 5 && !IS_VALLEYVIEW(dev),
+			WARN_ONCE(!HAS_GMCH_DISPLAY(dev),
 				  "Received HPD interrupt on pin %d although disabled\n", i);
 			continue;
 		}
@@ -468,9 +468,14 @@ void intel_hpd_init(struct drm_i915_private *dev_priv)
 	list_for_each_entry(connector, &mode_config->connector_list, head) {
 		struct intel_connector *intel_connector = to_intel_connector(connector);
 		connector->polled = intel_connector->polled;
-		if (connector->encoder && !connector->polled && I915_HAS_HOTPLUG(dev) && intel_connector->encoder->hpd_pin > HPD_NONE)
-			connector->polled = DRM_CONNECTOR_POLL_HPD;
+
+		/* MST has a dynamic intel_connector->encoder and it's reprobing
+		 * is all handled by the MST helpers. */
 		if (intel_connector->mst_port)
+			continue;
+
+		if (!connector->polled && I915_HAS_HOTPLUG(dev) &&
+		    intel_connector->encoder->hpd_pin > HPD_NONE)
 			connector->polled = DRM_CONNECTOR_POLL_HPD;
 	}
 

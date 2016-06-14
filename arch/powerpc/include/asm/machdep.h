@@ -54,15 +54,20 @@ struct machdep_calls {
 				       int psize, int apsize,
 				       int ssize);
 	long		(*hpte_remove)(unsigned long hpte_group);
-	void            (*hpte_removebolted)(unsigned long ea,
+	int             (*hpte_removebolted)(unsigned long ea,
 					     int psize, int ssize);
 	void		(*flush_hash_range)(unsigned long number, int local);
 	void		(*hugepage_invalidate)(unsigned long vsid,
 					       unsigned long addr,
 					       unsigned char *hpte_slot_array,
 					       int psize, int ssize, int local);
-	/* special for kexec, to be called in real mode, linear mapping is
-	 * destroyed as well */
+	/*
+	 * Special for kexec.
+	 * To be called in real mode with interrupts disabled. No locks are
+	 * taken as such, concurrent access on pre POWER5 hardware could result
+	 * in a deadlock.
+	 * The linear mapping is destroyed as well.
+	 */
 	void		(*hpte_clear_all)(void);
 
 	void __iomem *	(*ioremap)(phys_addr_t addr, unsigned long size,
@@ -169,11 +174,11 @@ struct machdep_calls {
 	   platform, called once per cpu. */
 	void		(*enable_pmcs)(void);
 
-	/* Set DABR for this platform, leave empty for default implemenation */
+	/* Set DABR for this platform, leave empty for default implementation */
 	int		(*set_dabr)(unsigned long dabr,
 				    unsigned long dabrx);
 
-	/* Set DAWR for this platform, leave empty for default implemenation */
+	/* Set DAWR for this platform, leave empty for default implementation */
 	int		(*set_dawr)(unsigned long dawr,
 				    unsigned long dawrx);
 
@@ -251,6 +256,7 @@ struct machdep_calls {
 #ifdef CONFIG_ARCH_RANDOM
 	int (*get_random_seed)(unsigned long *v);
 #endif
+	int (*update_partition_table)(u64);
 };
 
 extern void e500_idle(void);

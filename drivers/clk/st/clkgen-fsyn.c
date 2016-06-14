@@ -307,7 +307,7 @@ static const struct clkgen_quadfs_data st_fs660c32_F_416 = {
 	.get_rate	= clk_fs660c32_dig_get_rate,
 };
 
-static const struct clkgen_quadfs_data st_fs660c32_C_407 = {
+static const struct clkgen_quadfs_data st_fs660c32_C = {
 	.nrst_present = true,
 	.nrst	= { CLKGEN_FIELD(0x2f0, 0x1, 0),
 		    CLKGEN_FIELD(0x2f0, 0x1, 1),
@@ -350,7 +350,7 @@ static const struct clkgen_quadfs_data st_fs660c32_C_407 = {
 	.get_rate	= clk_fs660c32_dig_get_rate,
 };
 
-static const struct clkgen_quadfs_data st_fs660c32_D_407 = {
+static const struct clkgen_quadfs_data st_fs660c32_D = {
 	.nrst_present = true,
 	.nrst	= { CLKGEN_FIELD(0x2a0, 0x1, 0),
 		    CLKGEN_FIELD(0x2a0, 0x1, 1),
@@ -549,19 +549,20 @@ static int clk_fs660c32_vco_get_params(unsigned long input,
 	return 0;
 }
 
-static long quadfs_pll_fs660c32_round_rate(struct clk_hw *hw, unsigned long rate
-		, unsigned long *prate)
+static long quadfs_pll_fs660c32_round_rate(struct clk_hw *hw,
+					   unsigned long rate,
+					   unsigned long *prate)
 {
 	struct stm_fs params;
 
-	if (!clk_fs660c32_vco_get_params(*prate, rate, &params))
-		clk_fs660c32_vco_get_rate(*prate, &params, &rate);
+	if (clk_fs660c32_vco_get_params(*prate, rate, &params))
+		return rate;
 
-	pr_debug("%s: %s new rate %ld [sdiv=0x%x,md=0x%x,pe=0x%x,nsdiv3=%u]\n",
+	clk_fs660c32_vco_get_rate(*prate, &params, &rate);
+
+	pr_debug("%s: %s new rate %ld [ndiv=%u]\n",
 		 __func__, clk_hw_get_name(hw),
-		 rate, (unsigned int)params.sdiv,
-		 (unsigned int)params.mdiv,
-		 (unsigned int)params.pe, (unsigned int)params.nsdiv);
+		 rate, (unsigned int)params.ndiv);
 
 	return rate;
 }
@@ -573,12 +574,16 @@ static int quadfs_pll_fs660c32_set_rate(struct clk_hw *hw, unsigned long rate,
 	struct stm_fs params;
 	long hwrate = 0;
 	unsigned long flags = 0;
+	int ret;
 
 	if (!rate || !parent_rate)
 		return -EINVAL;
 
-	if (!clk_fs660c32_vco_get_params(parent_rate, rate, &params))
-		clk_fs660c32_vco_get_rate(parent_rate, &params, &hwrate);
+	ret = clk_fs660c32_vco_get_params(parent_rate, rate, &params);
+	if (ret)
+		return ret;
+
+	clk_fs660c32_vco_get_rate(parent_rate, &params, &hwrate);
 
 	pr_debug("%s: %s new rate %ld [ndiv=0x%x]\n",
 		 __func__, clk_hw_get_name(hw),
@@ -1077,11 +1082,11 @@ static const struct of_device_id quadfs_of_match[] = {
 	},
 	{
 		.compatible = "st,stih407-quadfs660-C",
-		.data = &st_fs660c32_C_407
+		.data = &st_fs660c32_C
 	},
 	{
 		.compatible = "st,stih407-quadfs660-D",
-		.data = &st_fs660c32_D_407
+		.data = &st_fs660c32_D
 	},
 	{}
 };

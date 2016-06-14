@@ -287,7 +287,7 @@ static void __rate_control_send_low(struct ieee80211_hw *hw,
 	u32 rate_flags =
 		ieee80211_chandef_rate_flags(&hw->conf.chandef);
 
-	if ((sband->band == IEEE80211_BAND_2GHZ) &&
+	if ((sband->band == NL80211_BAND_2GHZ) &&
 	    (info->flags & IEEE80211_TX_CTL_NO_CCK_RATE))
 		rate_flags |= IEEE80211_RATE_ERP_G;
 
@@ -305,7 +305,10 @@ static void __rate_control_send_low(struct ieee80211_hw *hw,
 		info->control.rates[0].idx = i;
 		break;
 	}
-	WARN_ON_ONCE(i == sband->n_bitrates);
+	WARN_ONCE(i == sband->n_bitrates,
+		  "no supported rates (0x%x) in rate_mask 0x%x with flags 0x%x\n",
+		  sta ? sta->supp_rates[sband->band] : -1,
+		  rate_mask, rate_flags);
 
 	info->control.rates[0].count =
 		(info->flags & IEEE80211_TX_CTL_NO_ACK) ?
@@ -716,7 +719,7 @@ static bool rate_control_cap_mask(struct ieee80211_sub_if_data *sdata,
 
 		/* Filter out rates that the STA does not support */
 		*mask &= sta->supp_rates[sband->band];
-		for (i = 0; i < sizeof(mcs_mask); i++)
+		for (i = 0; i < IEEE80211_HT_MCS_MASK_LEN; i++)
 			mcs_mask[i] &= sta->ht_cap.mcs.rx_mask[i];
 
 		sta_vht_cap = sta->vht_cap.vht_mcs.rx_mcs_map;

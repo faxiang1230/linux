@@ -307,11 +307,11 @@ static int hip04_irq_domain_map(struct irq_domain *d, unsigned int irq,
 		irq_set_percpu_devid(irq);
 		irq_set_chip_and_handler(irq, &hip04_irq_chip,
 					 handle_percpu_devid_irq);
-		set_irq_flags(irq, IRQF_VALID | IRQF_NOAUTOEN);
+		irq_set_status_flags(irq, IRQ_NOAUTOEN);
 	} else {
 		irq_set_chip_and_handler(irq, &hip04_irq_chip,
 					 handle_fasteoi_irq);
-		set_irq_flags(irq, IRQF_VALID | IRQF_PROBE);
+		irq_set_probe(irq);
 	}
 	irq_set_chip_data(irq, d->host_data);
 	return 0;
@@ -325,7 +325,7 @@ static int hip04_irq_domain_xlate(struct irq_domain *d,
 {
 	unsigned long ret = 0;
 
-	if (d->of_node != controller)
+	if (irq_domain_get_of_node(d) != controller)
 		return -EINVAL;
 	if (intsize < 3)
 		return -EINVAL;
@@ -402,7 +402,7 @@ hip04_of_init(struct device_node *node, struct device_node *parent)
 	nr_irqs -= hwirq_base; /* calculate # of irqs to allocate */
 
 	irq_base = irq_alloc_descs(-1, hwirq_base, nr_irqs, numa_node_id());
-	if (IS_ERR_VALUE(irq_base)) {
+	if (irq_base < 0) {
 		pr_err("failed to allocate IRQ numbers\n");
 		return -EINVAL;
 	}

@@ -23,7 +23,7 @@
 pg_data_t *node_data[MAX_NUMNODES];
 EXPORT_SYMBOL(node_data);
 
-cpumask_var_t node_to_cpumask_map[MAX_NUMNODES];
+cpumask_t node_to_cpumask_map[MAX_NUMNODES];
 EXPORT_SYMBOL(node_to_cpumask_map);
 
 const struct numa_mode numa_mode_plain = {
@@ -57,9 +57,7 @@ static __init pg_data_t *alloc_node_data(void)
 {
 	pg_data_t *res;
 
-	res = (pg_data_t *) memblock_alloc(sizeof(pg_data_t), 1);
-	if (!res)
-		panic("Could not allocate memory for node data!\n");
+	res = (pg_data_t *) memblock_alloc(sizeof(pg_data_t), 8);
 	memset(res, 0, sizeof(pg_data_t));
 	return res;
 }
@@ -144,7 +142,7 @@ void __init numa_setup(void)
 static int __init numa_init_early(void)
 {
 	/* Attach all possible CPUs to node 0 for now. */
-	cpumask_copy(node_to_cpumask_map[0], cpu_possible_mask);
+	cpumask_copy(&node_to_cpumask_map[0], cpu_possible_mask);
 	return 0;
 }
 early_initcall(numa_init_early);
@@ -162,7 +160,7 @@ static int __init numa_init_late(void)
 		register_one_node(nid);
 	return 0;
 }
-device_initcall(numa_init_late);
+arch_initcall(numa_init_late);
 
 static int __init parse_debug(char *parm)
 {

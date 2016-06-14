@@ -53,7 +53,7 @@ static inline unsigned int leon_eirq_get(int cpu)
 }
 
 /* Handle one or multiple IRQs from the extended interrupt controller */
-static void leon_handle_ext_irq(unsigned int irq, struct irq_desc *desc)
+static void leon_handle_ext_irq(struct irq_desc *desc)
 {
 	unsigned int eirq;
 	struct irq_bucket *p;
@@ -203,7 +203,7 @@ static struct irq_chip leon_irq = {
 
 /*
  * Build a LEON IRQ for the edge triggered LEON IRQ controller:
- *  Edge (normal) IRQ           - handle_simple_irq, ack=DONT-CARE, never ack
+ *  Edge (normal) IRQ           - handle_simple_irq, ack=DON'T-CARE, never ack
  *  Level IRQ (PCI|Level-GPIO)  - handle_fasteoi_irq, ack=1, ack after ISR
  *  Per-CPU Edge                - handle_percpu_irq, ack=0
  */

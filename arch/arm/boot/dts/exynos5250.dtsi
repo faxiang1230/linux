@@ -62,6 +62,28 @@
 			compatible = "arm,cortex-a15";
 			reg = <0>;
 			clock-frequency = <1700000000>;
+			clocks = <&clock CLK_ARM_CLK>;
+			clock-names = "cpu";
+			clock-latency = <140000>;
+
+			operating-points = <
+				1700000 1300000
+				1600000 1250000
+				1500000 1225000
+				1400000 1200000
+				1300000 1150000
+				1200000 1125000
+				1100000 1100000
+				1000000 1075000
+				 900000 1050000
+				 800000 1025000
+				 700000 1012500
+				 600000 1000000
+				 500000  975000
+				 400000  950000
+				 300000  937500
+				 200000  925000
+			>;
 			cooling-min-level = <15>;
 			cooling-max-level = <9>;
 			#cooling-cells = <2>; /* min followed by max */
@@ -108,6 +130,10 @@
 		compatible = "samsung,exynos4210-pd";
 		reg = <0x100440A0 0x20>;
 		#power-domain-cells = <0>;
+		clocks = <&clock CLK_FIN_PLL>,
+			 <&clock CLK_MOUT_ACLK200_DISP1_SUB>,
+			 <&clock CLK_MOUT_ACLK300_DISP1_SUB>;
+		clock-names = "oscclk", "clk0", "clk1";
 	};
 
 	clock: clock-controller@10010000 {
@@ -241,6 +267,15 @@
 		clock-names = "mfc";
 		iommus = <&sysmmu_mfc_l>, <&sysmmu_mfc_r>;
 		iommu-names = "left", "right";
+	};
+
+	rotator: rotator@11C00000 {
+		compatible = "samsung,exynos5250-rotator";
+		reg = <0x11C00000 0x64>;
+		interrupts = <0 84 0>;
+		clocks = <&clock CLK_ROTATOR>;
+		clock-names = "rotator";
+		iommus = <&sysmmu_rotator>;
 	};
 
 	tmu: tmu@10060000 {
@@ -561,7 +596,7 @@
 		pinctrl-0 = <&i2s2_bus>;
 	};
 
-	usb@12000000 {
+	usb_dwc3 {
 		compatible = "samsung,exynos5250-dwusb3";
 		clocks = <&clock CLK_USB3>;
 		clock-names = "usbdrd30";
@@ -569,7 +604,7 @@
 		#size-cells = <1>;
 		ranges;
 
-		usbdrd_dwc3: dwc3 {
+		usbdrd_dwc3: dwc3@12000000 {
 			compatible = "synopsys,dwc3";
 			reg = <0x12000000 0x10000>;
 			interrupts = <0 72 0>;
@@ -639,7 +674,7 @@
 	amba {
 		#address-cells = <1>;
 		#size-cells = <1>;
-		compatible = "arm,amba-bus";
+		compatible = "simple-bus";
 		interrupt-parent = <&gic>;
 		ranges;
 
@@ -728,7 +763,7 @@
 		iommu = <&sysmmu_gsc3>;
 	};
 
-	hdmi: hdmi {
+	hdmi: hdmi@14530000 {
 		compatible = "samsung,exynos4212-hdmi";
 		reg = <0x14530000 0x70000>;
 		power-domains = <&pd_disp1>;
@@ -741,7 +776,7 @@
 		samsung,syscon-phandle = <&pmu_system_controller>;
 	};
 
-	mixer {
+	mixer@14450000 {
 		compatible = "samsung,exynos5250-mixer";
 		reg = <0x14450000 0x10000>;
 		power-domains = <&pd_disp1>;
@@ -752,7 +787,7 @@
 		iommus = <&sysmmu_tv>;
 	};
 
-	dp_phy: video-phy@10040720 {
+	dp_phy: video-phy {
 		compatible = "samsung,exynos5250-dp-video-phy";
 		samsung,pmu-syscon = <&pmu_system_controller>;
 		#phy-cells = <0>;
@@ -772,7 +807,7 @@
 
 	sss@10830000 {
 		compatible = "samsung,exynos4210-secss";
-		reg = <0x10830000 0x10000>;
+		reg = <0x10830000 0x300>;
 		interrupts = <0 112 0>;
 		clocks = <&clock CLK_SSS>;
 		clock-names = "secss";
