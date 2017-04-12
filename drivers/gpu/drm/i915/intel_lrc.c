@@ -2189,8 +2189,8 @@ error_deref_obj:
 
 void intel_lr_context_resume(struct drm_i915_private *dev_priv)
 {
-	struct intel_engine_cs *engine;
 	struct i915_gem_context *ctx;
+	struct intel_engine_cs *engine;
 	enum intel_engine_id id;
 
 	/* Because we emit WA_TAIL_DWORDS there may be a disparity
@@ -2211,21 +2211,20 @@ void intel_lr_context_resume(struct drm_i915_private *dev_priv)
 			if (!ce->state)
 				continue;
 
-			reg = i915_gem_object_pin_map(ce->state->obj,
-						      I915_MAP_WB);
-			if (WARN_ON(IS_ERR(reg)))
+			vaddr = i915_gem_object_pin_map(ce->state->obj, I915_MAP_WB);
+			if (WARN_ON(IS_ERR(vaddr)))
 				continue;
 
-			reg += LRC_STATE_PN * PAGE_SIZE / sizeof(*reg);
-			reg[CTX_RING_HEAD+1] = 0;
-			reg[CTX_RING_TAIL+1] = 0;
+		reg_state = vaddr + LRC_STATE_PN * PAGE_SIZE;
 
-			ce->state->obj->mm.dirty = true;
-			i915_gem_object_unpin_map(ce->state->obj);
+		reg_state[CTX_RING_HEAD+1] = 0;
+		reg_state[CTX_RING_TAIL+1] = 0;
 
-			ce->ring->head = ce->ring->tail = 0;
-			ce->ring->last_retired_head = -1;
-			intel_ring_update_space(ce->ring);
-		}
+		ce->state->obj->mm.dirty = true;
+		i915_gem_object_unpin_map(ce->state->obj);
+
+		ce->ring->head = ce->ring->tail = 0;
+		ce->ring->last_retired_head = -1;
+		intel_ring_update_space(ce->ring);
 	}
 }
