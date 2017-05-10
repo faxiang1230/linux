@@ -2211,20 +2211,21 @@ void intel_lr_context_resume(struct drm_i915_private *dev_priv)
 			if (!ce->state)
 				continue;
 
-			vaddr = i915_gem_object_pin_map(ce->state->obj, I915_MAP_WB);
-			if (WARN_ON(IS_ERR(vaddr)))
+			reg = i915_gem_object_pin_map(ce->state->obj, I915_MAP_WB);
+			if (WARN_ON(IS_ERR(reg)))
 				continue;
 
-		reg_state = vaddr + LRC_STATE_PN * PAGE_SIZE;
+			reg += LRC_STATE_PN * PAGE_SIZE / sizeof(*reg);
 
-		reg_state[CTX_RING_HEAD+1] = 0;
-		reg_state[CTX_RING_TAIL+1] = 0;
+			reg[CTX_RING_HEAD+1] = 0;
+			reg[CTX_RING_TAIL+1] = 0;
 
-		ce->state->obj->mm.dirty = true;
-		i915_gem_object_unpin_map(ce->state->obj);
+			ce->state->obj->mm.dirty = true;
+			i915_gem_object_unpin_map(ce->state->obj);
 
-		ce->ring->head = ce->ring->tail = 0;
-		ce->ring->last_retired_head = -1;
-		intel_ring_update_space(ce->ring);
+			ce->ring->head = ce->ring->tail = 0;
+			ce->ring->last_retired_head = -1;
+			intel_ring_update_space(ce->ring);
+		}
 	}
 }
